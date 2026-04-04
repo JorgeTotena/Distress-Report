@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Distress Report — Generation Guide</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    html { font-size: 16px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1a1a1a; background: #f4f4f4; line-height: 1.6; }
+
+    h1, h2, h3 { font-family: Georgia, 'Times New Roman', serif; font-weight: 700; color: #1a1a1a; line-height: 1.2; }
+    h1 { font-size: 2.25rem; letter-spacing: -0.02em; }
+    h2 { font-size: 1.5rem; letter-spacing: -0.01em; }
+    h3 { font-size: 1.1rem; }
+    p, li, td, th { font-size: 0.9rem; color: #1a1a1a; line-height: 1.65; }
+
+    .page {
+      width: 8.5in;
+      min-height: 11in;
+      margin: 0 auto 24px;
+      padding: 48px 56px 80px;
+      background: #ffffff;
+      position: relative;
+      border: 1px solid #d4d4d4;
+    }
+
+    @media print {
+      body { background: none; }
+      .page { border: none; margin: 0; page-break-after: always; min-height: 11in; }
+      .page:last-child { page-break-after: auto; }
+      .no-print { display: none; }
+    }
+    @page { margin: 0; size: 8.5in 11in; }
+
+    /* COVER */
+    .cover { display: flex; flex-direction: column; justify-content: center; padding-top: 80px; }
+    .cover-logo { margin-bottom: 72px; }
+    .cover-logo img { height: 52px; display: block; }
+    .cover-logo-text { font-family: Georgia, serif; font-size: 1.6rem; font-weight: 700; color: #0B5394; letter-spacing: -0.02em; }
+    .cover-divider { width: 64px; height: 3px; background: #0B5394; margin-bottom: 32px; }
+    .cover-title { font-family: Georgia, 'Times New Roman', serif; font-size: 2.75rem; font-weight: 700; color: #1a1a1a; line-height: 1.12; margin-bottom: 20px; letter-spacing: -0.02em; }
+    .cover-subtitle { font-size: 1.05rem; color: #555; margin-bottom: 56px; line-height: 1.6; max-width: 540px; }
+    .cover-meta { display: flex; gap: 48px; margin-bottom: 64px; }
+    .cover-meta-item label { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: #999; display: block; margin-bottom: 4px; }
+    .cover-meta-item span { font-size: 0.9rem; color: #1a1a1a; font-weight: 600; }
+    .cover-confidential { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: #aaa; border-top: 1px solid #d4d4d4; padding-top: 16px; display: inline-block; }
+
+    /* PAGE HEADER */
+    .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 28px; padding-bottom: 16px; border-bottom: 1px solid #e5e5e5; }
+    .page-header-logo { font-family: Georgia, serif; font-size: 0.875rem; font-weight: 700; color: #0B5394; }
+    .page-header-right { font-size: 0.625rem; color: #aaa; letter-spacing: 0.05em; text-align: right; }
+
+    /* PAGE FOOTER */
+    .page-footer { position: absolute; bottom: 28px; left: 56px; right: 56px; display: flex; justify-content: space-between; align-items: center; font-size: 0.625rem; color: #aaa; letter-spacing: 0.05em; border-top: 1px solid #e5e5e5; padding-top: 10px; }
+
+    /* SECTION LABEL */
+    .section-label { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: #0B5394; margin-bottom: 6px; display: block; }
+
+    /* ACTION TITLE */
+    .action-title { font-family: Georgia, serif; font-size: 1.2rem; font-weight: 700; color: #1a1a1a; line-height: 1.35; margin-bottom: 24px; border-bottom: 2px solid #0B5394; padding-bottom: 12px; }
+
+    /* KPI CARDS */
+    .kpi-row { display: flex; gap: 0; margin-bottom: 28px; }
+    .kpi-card { flex: 1; padding: 16px 18px; border: 1px solid #d4d4d4; border-right: none; text-align: center; }
+    .kpi-card:last-child { border-right: 1px solid #d4d4d4; }
+    .kpi-label { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; margin-bottom: 4px; }
+    .kpi-value { font-family: Georgia, serif; font-size: 1.75rem; font-weight: 700; color: #0B5394; line-height: 1.1; }
+    .kpi-context { font-size: 0.7rem; color: #888; margin-top: 3px; }
+
+    /* PHASE BLOCKS */
+    .phase-block { padding: 14px 18px; border-left: 3px solid #0B5394; background: #E8F0FE; margin-bottom: 12px; }
+    .phase-num { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #0B5394; margin-bottom: 3px; }
+    .phase-title { font-family: Georgia, serif; font-size: 0.95rem; font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }
+    .phase-text { font-size: 0.8rem; line-height: 1.6; color: #2d2d2d; }
+
+    /* INSIGHT BOX */
+    .insight-box { background: #E8F0FE; border-left: 3px solid #0B5394; padding: 12px 16px; margin-bottom: 20px; }
+    .insight-box p { font-size: 0.85rem; line-height: 1.55; }
+    .insight-box.warn { border-left-color: #B45309; background: #FEF3C7; }
+    .insight-box.positive { border-left-color: #166534; background: #DCFCE7; }
+
+    /* CODE BLOCK */
+    .code-block { background: #1a1a1a; color: #e8e8e8; font-family: 'Courier New', Courier, monospace; font-size: 0.78rem; padding: 12px 16px; margin-bottom: 14px; line-height: 1.7; border-radius: 0; }
+    .code-block .comment { color: #6b9e6b; }
+    .code-block .cmd { color: #88ccff; }
+
+    /* TABLE */
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    table th { font-size: 0.625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #666; text-align: left; padding: 7px 8px 7px 0; border-bottom: 2px solid #1a1a1a; }
+    table td { font-size: 0.8rem; padding: 7px 8px 7px 0; border-bottom: 1px solid #ebebeb; color: #2d2d2d; vertical-align: top; }
+    table tr:last-child td { border-bottom: none; }
+    table tr:nth-child(even) td { background: #F9FAFB; }
+    table .mono { font-family: 'Courier New', monospace; font-size: 0.75rem; color: #0B5394; }
+
+    /* STEP NUMBER */
+    .step-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+    .step-badge { font-family: Georgia, serif; min-width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: 700; color: #0B5394; border: 2px solid #0B5394; border-radius: 50%; flex-shrink: 0; }
+    .step-title { font-family: Georgia, serif; font-size: 1rem; font-weight: 700; color: #1a1a1a; }
+
+    /* BULLET LIST */
+    ul.bullet-list { list-style: none; padding: 0; margin-bottom: 14px; }
+    ul.bullet-list li { font-size: 0.85rem; padding-left: 14px; position: relative; margin-bottom: 6px; color: #2d2d2d; line-height: 1.55; }
+    ul.bullet-list li::before { content: ''; position: absolute; left: 0; top: 8px; width: 5px; height: 5px; background: #0B5394; border-radius: 50%; }
+
+    /* TWO COL */
+    .two-col { display: flex; gap: 28px; }
+    .two-col .col { flex: 1; }
+
+    .divider { border-top: 1px solid #e5e5e5; margin: 18px 0; }
+    .sub-section-header { font-family: Georgia, serif; font-size: 0.95rem; font-weight: 700; color: #1a1a1a; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid #e5e5e5; }
+    .tag { display: inline-block; font-size: 0.625rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; background: #E8F0FE; color: #0B5394; margin-left: 8px; }
+    .tag.green { background: #DCFCE7; color: #166534; }
+    .tag.amber { background: #FEF3C7; color: #B45309; }
+    .mt-16 { margin-top: 16px; }
+    .mt-12 { margin-top: 12px; }
+    .mb-16 { margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ COVER PAGE -->
+<div class="page cover">
+  <div class="cover-logo">
+    <img src="8020REI-skills-main/8020REI-skills-main/customer_success/logos/logo-full-light.png"
+         alt="8020REI"
+         onerror="this.style.display='none'; this.nextElementSibling.style.display='block';" />
+    <span class="cover-logo-text" style="display:none;">8020REI</span>
+  </div>
+
+  <div class="cover-divider"></div>
+  <div class="cover-title">Distress Report<br>Generation Guide</div>
+  <div class="cover-subtitle">A step-by-step walkthrough for generating the Distress Report using Claude Code and the 8020skills framework — from raw fulfillment files to a fully populated Excel output.</div>
+
+  <div class="cover-meta">
+    <div class="cover-meta-item">
+      <label>Document Type</label>
+      <span>Operational Guide</span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Department</label>
+      <span>Customer Success</span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Last Updated</label>
+      <span>April 2026</span>
+    </div>
+    <div class="cover-meta-item">
+      <label>Version</label>
+      <span>1.0</span>
+    </div>
+  </div>
+
+  <span class="cover-confidential">8020REI Internal — Not for Distribution</span>
+
+  <div class="page-footer">
+    <span>8020REI — Distress Report Generation Guide</span>
+    <span>Page 1 of 5</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ PAGE 2 — OVERVIEW -->
+<div class="page">
+  <div class="page-header">
+    <span class="page-header-logo">8020REI</span>
+    <span class="page-header-right">Distress Report Generation Guide &nbsp;|&nbsp; April 2026</span>
+  </div>
+
+  <span class="section-label">Overview</span>
+  <div class="action-title">The Distress Report converts raw fulfillment data into a structured Excel file showing property counts, distress signals, and client deal performance across 17 categories.</div>
+
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-label">Domain Properties</div>
+      <div class="kpi-value">136,669</div>
+      <div class="kpi-context">BUYBOX Score &gt; 0</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Fulfillment FOLIOs</div>
+      <div class="kpi-value">37,338</div>
+      <div class="kpi-context">Unique properties</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Sold Since Oct '25</div>
+      <div class="kpi-value">390</div>
+      <div class="kpi-context">In fulfillment</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Client Leads</div>
+      <div class="kpi-value">345+</div>
+      <div class="kpi-context">Fulfillment-matched</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Client Deals</div>
+      <div class="kpi-value">4+</div>
+      <div class="kpi-context">Fulfillment-matched</div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div class="col">
+      <div class="sub-section-header">What the Report Produces</div>
+      <p style="font-size:0.85rem; margin-bottom:10px;">The output is a single Excel file (<span style="font-family:monospace; font-size:0.8rem; color:#0B5394;">Expected_Result_Max_BCDFG_InFulfillment.xlsx</span>) with one row per distress category and these columns:</p>
+      <table>
+        <thead><tr><th>Col</th><th>Description</th><th>Source</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">B</td><td>Total Properties</td><td>Domain (BUYBOX &gt; 0)</td></tr>
+          <tr><td class="mono">C</td><td>In Fulfillment</td><td>Fulfillment MAX logic</td></tr>
+          <tr><td class="mono">D</td><td>Sold since Oct 1, 2025</td><td>Domain last sale date</td></tr>
+          <tr><td class="mono">E</td><td>Client Leads</td><td>Leads + Appointments</td></tr>
+          <tr><td class="mono">F</td><td>Client Deals</td><td>Fulfillment-matched deals</td></tr>
+          <tr><td class="mono">G–I</td><td>Concentration %</td><td>Excel formulas (=D/C etc.)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col">
+      <div class="sub-section-header">Project Folder Structure</div>
+      <div class="code-block"><span class="comment"># Working directory layout</span>
+Distress Report/
+├── build_domain_report.py   <span class="comment"># MAIN script</span>
+├── build_population.py      <span class="comment"># Step 1 & 3</span>
+├── build_reports.py         <span class="comment"># Step 2 (Col C only)</span>
+├── compile_domain.py        <span class="comment"># One-time setup</span>
+├── Fulfillments/            <span class="comment"># Source xlsx files</span>
+├── Documents/               <span class="comment"># Deals & Leads file</span>
+├── Domain Full Data/        <span class="comment"># domain.parquet</span>
+├── Market Deals/            <span class="comment"># (disabled)</span>
+└── Expected Result/         <span class="comment"># Template CSV</span></div>
+    </div>
+  </div>
+
+  <div class="insight-box">
+    <p><strong>Before you begin:</strong> You need Python 3.10+ with <code>pandas</code>, <code>openpyxl</code>, <code>numpy</code>, and <code>pyarrow</code> installed. Run <code>pip install pandas openpyxl numpy pyarrow</code> if not already set up. Claude Code must be open in the project root.</p>
+  </div>
+
+  <div class="page-footer">
+    <span>8020REI — Distress Report Generation Guide</span>
+    <span>Page 2 of 5</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ PAGE 3 — STEPS 1–2 -->
+<div class="page">
+  <div class="page-header">
+    <span class="page-header-logo">8020REI</span>
+    <span class="page-header-right">Distress Report Generation Guide &nbsp;|&nbsp; April 2026</span>
+  </div>
+
+  <span class="section-label">Data Preparation — Steps 1 & 2</span>
+  <div class="action-title">Start by placing input files in the correct folders, then compile fulfillment data into a single dataset before running any report script.</div>
+
+  <!-- STEP 1 -->
+  <div class="step-header">
+    <div class="step-badge">1</div>
+    <div class="step-title">Organize Your Input Files</div>
+  </div>
+  <p style="font-size:0.85rem; margin-bottom:10px; margin-left:40px;">Before running any script, confirm all source files are in place. Claude Code can verify this for you.</p>
+  <div style="margin-left:40px;">
+    <table>
+      <thead><tr><th>Folder</th><th>Required Files</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">Fulfillments/</td><td>Monthly fulfillment .xlsx files (Oct–Dec 2025)</td><td>Each file must include FOLIO, LIKELY DEAL SCORE, MAIN DISTRESS #1–4, ACTION PLANS, MARKETING DM/SMS COUNT</td></tr>
+        <tr><td class="mono">Documents/</td><td><code>Deals and Leads Freedom.xlsx</code></td><td>Must include PROPERTY STATUS, FOLIO, LEAD DATE, APPOINTMENT DATE, LAST SALE DATE columns</td></tr>
+        <tr><td class="mono">Domain Full Data/</td><td><code>domain.parquet</code></td><td>Generated once by <code>compile_domain.py</code> — see Step 3</td></tr>
+      </tbody>
+    </table>
+    <div class="insight-box warn mt-12">
+      <p><strong>Claude Code prompt to verify files:</strong> <em>"Check that all required input files exist in Fulfillments/, Documents/, and Domain Full Data/ and list any that are missing."</em></p>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- STEP 2 -->
+  <div class="step-header">
+    <div class="step-badge">2</div>
+    <div class="step-title">Compile Fulfillment Data <span class="tag green">Generates: Fulfillment_Compilation.xlsx</span></div>
+  </div>
+  <p style="font-size:0.85rem; margin-bottom:10px; margin-left:40px;">This step reads all files in <code>Fulfillments/</code>, adds Month, Marketing_Channel, and Source_File columns, and stacks them into one master dataset (77,000 rows, 37,338 unique FOLIOs).</p>
+
+  <div style="margin-left:40px;">
+    <div class="two-col">
+      <div class="col">
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Run in terminal</div>
+        <div class="code-block"><span class="cmd">python build_population.py</span></div>
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Or prompt Claude Code</div>
+        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run build_population.py and confirm how many rows and unique FOLIOs were compiled."</div>
+      </div>
+      <div class="col">
+        <div class="sub-section-header">Expected Console Output</div>
+        <div class="code-block"><span class="comment"># Successful run looks like:</span>
+Loading Fulfillments/...
+  oct-2025-sms.xlsx → 31,024 rows
+  nov-2025-sms.xlsx → 16,311 rows
+  dec-2025-dm.xlsx  → 25,040 rows
+  ...
+Compiled: 77,000 rows
+Unique FOLIOs: 37,338
+Saved → Fulfillment_Compilation.xlsx
+Saved → Population_For_Calculation.xlsx</div>
+      </div>
+    </div>
+
+    <div class="insight-box">
+      <p><strong>What this also produces:</strong> <code>Population_For_Calculation.xlsx</code> — one row per unique property (37,338 rows) with every value used in MAX and AVERAGE calculations. This is your audit file.</p>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>8020REI — Distress Report Generation Guide</span>
+    <span>Page 3 of 5</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ PAGE 4 — STEPS 3–5 -->
+<div class="page">
+  <div class="page-header">
+    <span class="page-header-logo">8020REI</span>
+    <span class="page-header-right">Distress Report Generation Guide &nbsp;|&nbsp; April 2026</span>
+  </div>
+
+  <span class="section-label">Report Generation — Steps 3, 4 & 5</span>
+  <div class="action-title">With fulfillment data compiled, build the domain cache once, then run the main report script to produce the final Excel output.</div>
+
+  <!-- STEP 3 -->
+  <div class="step-header">
+    <div class="step-badge">3</div>
+    <div class="step-title">Build the Domain Cache <span class="tag amber">One-time setup</span></div>
+  </div>
+  <div style="margin-left:40px; margin-bottom:14px;">
+    <p style="font-size:0.85rem; margin-bottom:8px;">The domain data ships as two large Excel parts. <code>compile_domain.py</code> merges them and saves a fast-loading <code>domain.parquet</code> file. <strong>Only run this once</strong> — or when you receive updated domain files.</p>
+    <div class="code-block"><span class="cmd">python compile_domain.py</span>
+<span class="comment"># Output: Domain Full Data/domain.parquet (536,941 rows)
+# DEFAULT RISK is embedded directly in this parquet — no separate file needed.</span></div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- STEP 4 -->
+  <div class="step-header">
+    <div class="step-badge">4</div>
+    <div class="step-title">Optional — Column C Only Report <span class="tag">Quick validation</span></div>
+  </div>
+  <div style="margin-left:40px; margin-bottom:14px;">
+    <p style="font-size:0.85rem; margin-bottom:8px;">Run <code>build_reports.py</code> to generate a Column C-only report before the full run. Useful for validating score bucketing, action plans, distress counts, and marketing count logic against the expected result template.</p>
+    <div class="code-block"><span class="cmd">python build_reports.py</span>
+<span class="comment"># Outputs: Expected_Result_Max.xlsx, Expected_Result_Average.xlsx</span></div>
+    <div class="insight-box">
+      <p><strong>Claude Code prompt:</strong> <em>"Run build_reports.py and compare the Likely Deal Score distribution in the output against the values in Expected Result/Atlas - Expected Result.csv."</em></p>
+    </div>
+  </div>
+
+  <div class="divider"></div>
+
+  <!-- STEP 5 -->
+  <div class="step-header">
+    <div class="step-badge">5</div>
+    <div class="step-title">Run the Full Report <span class="tag green">Main output</span></div>
+  </div>
+  <div style="margin-left:40px;">
+    <p style="font-size:0.85rem; margin-bottom:8px;">This is the primary script. It loads all data sources, applies MAX logic across all columns, handles Deals/Leads/Appointments filtering by <code>CLIENT_START_DATE</code>, writes Excel formulas for concentration columns, and saves the final report.</p>
+    <div class="code-block"><span class="cmd">python build_domain_report.py</span>
+<span class="comment"># Output: Expected_Result_Max_BCDFG_InFulfillment.xlsx</span></div>
+
+    <div class="two-col">
+      <div class="col">
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Before running — set client start date</div>
+        <div class="code-block"><span class="comment"># Line ~36 of build_domain_report.py</span>
+CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</span>)
+<span class="comment"># Change this for each new client</span></div>
+      </div>
+      <div class="col">
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Claude Code prompt to run & verify</div>
+        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run build_domain_report.py. When done, open the output and tell me the Column C total for Pre-foreclosure and how many Client Leads (Col E) were matched."</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>8020REI — Distress Report Generation Guide</span>
+    <span>Page 4 of 5</span>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════ PAGE 5 — OUTPUTS & REFERENCE -->
+<div class="page">
+  <div class="page-header">
+    <span class="page-header-logo">8020REI</span>
+    <span class="page-header-right">Distress Report Generation Guide &nbsp;|&nbsp; April 2026</span>
+  </div>
+
+  <span class="section-label">Reference</span>
+  <div class="action-title">All output files, key business logic decisions, and guidance for running the report for a new client are documented below.</div>
+
+  <div class="two-col">
+    <div class="col">
+      <div class="sub-section-header">Output Files</div>
+      <table>
+        <thead><tr><th>File</th><th>Purpose</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">Expected_Result_Max_BCDFG<br>_InFulfillment.xlsx</td><td><strong>Primary output.</strong> Full report with all columns B–I.</td></tr>
+          <tr><td class="mono">Fulfillment_Compilation.xlsx</td><td>All fulfillment files stacked (77k rows). Used as input by main script.</td></tr>
+          <tr><td class="mono">Population_For_Calculation.xlsx</td><td>Audit file — one row per unique property with all calculated values.</td></tr>
+          <tr><td class="mono">Expected_Result_Max.xlsx</td><td>Column C only (MAX logic). For validation.</td></tr>
+          <tr><td class="mono">Expected_Result_Average.xlsx</td><td>Column C only (AVERAGE logic). For validation.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="sub-section-header mt-16">Key Business Logic</div>
+      <ul class="bullet-list">
+        <li><strong>Marketing Count:</strong> <code>max(total DM, total SMS)</code> per property across all months — not the sum. A property with 7 SMS + 4 DM = count of 7.</li>
+        <li><strong>Action Plan:</strong> Minimum days (30 &lt; 60 &lt; 90) across all months — the most aggressive plan wins.</li>
+        <li><strong>Leads filter:</strong> <code>LEAD DATE ≥ CLIENT_START_DATE</code>. Appointments filtered by <code>APPOINTMENT DATE</code>, then reclassified as Leads.</li>
+        <li><strong>Contracts:</strong> Excluded — no reliable date column available.</li>
+        <li><strong>Owner Occupied:</strong> Derived from <code>ABSENTEE = 0</code> in domain via FOLIO join. Not available directly from fulfillment distress columns.</li>
+      </ul>
+    </div>
+
+    <div class="col">
+      <div class="sub-section-header">Running for a New Client</div>
+      <ol style="list-style:none; counter-reset:step; padding:0; margin-bottom:16px;">
+        <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
+          <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">1</span>
+          Replace <code>Deals and Leads Freedom.xlsx</code> in <code>Documents/</code> with the new client's file. Confirm column names match.
+        </li>
+        <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
+          <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">2</span>
+          Update <code>DEALS_PATH</code> and <code>CLIENT_START_DATE</code> at the top of <code>build_domain_report.py</code>.
+        </li>
+        <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
+          <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">3</span>
+          Drop the new fulfillment files in <code>Fulfillments/</code>. Re-run <code>build_population.py</code> to recompile.
+        </li>
+        <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
+          <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">4</span>
+          Run <code>build_domain_report.py</code>. Only rerun <code>compile_domain.py</code> if you received new domain data files.
+        </li>
+      </ol>
+
+      <div class="sub-section-header">Diagnostic Scripts</div>
+      <table>
+        <thead><tr><th>Script</th><th>Use When</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">domain_check.py</td><td>Need to inspect domain column names or structure</td></tr>
+          <tr><td class="mono">market_deals_check.py</td><td>Re-enabling Market Deals column (currently disabled)</td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight-box warn mt-12">
+        <p><strong>Market Deals column is disabled.</strong> The data and logic are intact in <code>build_domain_report.py</code> (STEP 5, commented out). See <code>HANDOFF.md</code> → "Market Deals Column — Re-enable Instructions" for the full checklist to turn it back on.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>8020REI — Distress Report Generation Guide</span>
+    <span>Page 5 of 5</span>
+  </div>
+</div>
+
+</body>
+</html>
