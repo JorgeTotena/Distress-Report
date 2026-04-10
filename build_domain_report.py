@@ -2,15 +2,19 @@
 build_domain_report.py
 ─────────────────────────────────────────────────────────────────────────────
 Generates Expected_Result_Max_BCDFG_InFulfillment.xlsx with:
-  Column B — Total Properties        (all 536k domain properties)
-  Column C — Properties in the fulfillment (MAX logic, all 37k)
-  Column D — Sold since Oct 1 2025   (pre-sale scores from fulfillment where available)
-  Column E — Clients Lead            (fulfillment-matched leads only: 345)
-  Column F — Client Deals            (fulfillment-matched deals only: 4)
-  Column G — Sold Concentration %    =D/C  (formula)
-  Column H — Client Deals Conc.      =F/C  (formula)
-  Column I — Client Leads Conc.      =E/C  (formula)
-  [Column E Market Deals — temporarily disabled, see STEP 5 below]
+  Column B — Total Properties        (all domain properties with BUYBOX SCORE > 0)
+  Column C — Properties in the fulfillment (MAX logic, 6-month window)
+  Column D — Sold since start of fulfillment window (pre-sale scores from fulfillment)
+  Column E — Market Deals            (overlap: market deals ∩ fulfillment-sold)
+  Column F — Clients Lead            (fulfillment-matched leads/appointments/dead leads/contracts)
+  Column G — Client Deals            (fulfillment-matched deals only)
+  Column H — Sold Concentration %              =D/C  (formula)
+  Column I — Sold to Investors Concentration   =E/C  (formula)
+  Column J — Client Deals Conc.               =G/C  (formula)
+  Column K — Client Leads Conc.               =F/C  (formula)
+
+Dynamic window: 6 months ending 3 months before today. Uses all available files if fewer than 6.
+Deals/Leads: any .xlsx in Documents/ whose name contains "leads" or "deals" (case-insensitive).
 """
 
 import pandas as pd
@@ -25,16 +29,30 @@ from openpyxl.comments import Comment
 BASE              = Path(__file__).parent
 FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
-DEALS_PATH        = BASE / "Documents" / "Deals and Leads Freedom.xlsx"
+DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Atlas Market Deals.xlsx"
-OUTPUT            = BASE / "Expected_Result_Max_BCDFG_InFulfillment.xlsx"
+MARKET_PATH       = BASE / "Market Deals" / "SBD Market Deals.xlsx"
+CLIENT_NAME       = "SBD"
+OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Freedom REI started doing business with 8020REI on 2021-10-26
-CLIENT_START_DATE = pd.to_datetime("2021-10-26")
+# SBD started doing business with 8020REI on 2023-09-26
+CLIENT_START_DATE = pd.to_datetime("2023-09-26")
 print(f"Filtering leads/deals to on or after: {CLIENT_START_DATE.date()}")
+
+# ── Analysis window — 6 months, derived dynamically from today's date ─────────
+# Standard: 6-month window ending 3 months before the analysis month.
+# Most recent month  = analysis_month − 3
+# Oldest month       = most_recent − 5  (6 months total)
+# If fewer than 6 fulfillment files are available, use whatever is there.
+_today         = pd.Timestamp.today().normalize()
+_analysis_month = _today.replace(day=1)
+WINDOW_END     = (_analysis_month - pd.DateOffset(months=3)).replace(day=1)
+WINDOW_START   = (WINDOW_END      - pd.DateOffset(months=5)).replace(day=1)
+SOLD_SINCE     = WINDOW_START   # Column D cutoff — sold on or after the start of the window
+print(f"Analysis month: {_analysis_month.strftime('%Y-%m')} | "
+      f"Fulfillment window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')}")
 
 # ── Bucket definitions ────────────────────────────────────────────────────────
 likely_bins   = [-0.5, 20, 40, 60, 80, 100.5]
@@ -74,27 +92,38 @@ DOMAIN_DIST_MAP = {
 
 COLS = [
     'Category', 'Total Properties', 'Properties in the fulfillment',
-    'Sold', 'Clients Lead', 'Client Deals',
-    'Sold Concentration %Sold',
-    # 'Market Deals' — disabled, see STEP 5
-    # 'Sold to investors concentration' — disabled (depends on Market Deals)
+    'Sold', 'Market Deals', 'Clients Lead', 'Client Deals',
+    'Sold Concentration %Sold', 'Sold to investors concentration',
     'Client Deals Concentration', 'Client Leads Concentration',
 ]
 SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress'}
 
 # ── Default Risk lookup — derived from domain (DEFAULT RISK column) ───────────
 # Loaded early so dr_folios is available for fulfillment injection (STEP 1)
+# Some domain file versions omit this column — handled gracefully.
 print("Loading Default Risk from domain...")
 _parquet_early = DOMAIN_DIR / "domain.parquet"
+dr_folios = set()
 if _parquet_early.exists():
-    _dr = pd.read_parquet(_parquet_early, columns=['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK'])
+    import pyarrow.parquet as _pq
+    if 'DEFAULT RISK' in _pq.read_schema(_parquet_early).names:
+        _dr = pd.read_parquet(_parquet_early, columns=['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK'])
+        _dr_risk = _dr[pd.to_numeric(_dr['DEFAULT RISK'], errors='coerce').fillna(0) > 0]
+        dr_folios = set(_dr_risk['FOLIO'].dropna().astype(str).str.strip().unique())
+        del _dr, _dr_risk
+    else:
+        print("  DEFAULT RISK column not in domain file — Default Risk counts will be 0")
 else:
     _xlsx = sorted(f for f in DOMAIN_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
-    _dr   = pd.concat([pd.read_excel(f, usecols=['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK']) for f in _xlsx], ignore_index=True)
-_dr_risk = _dr[pd.to_numeric(_dr['DEFAULT RISK'], errors='coerce').fillna(0) > 0]
-dr_folios = set(_dr_risk['FOLIO'].dropna().astype(str).str.strip().unique())
+    _sample = pd.read_excel(_xlsx[0], nrows=0)
+    if 'DEFAULT RISK' in _sample.columns:
+        _dr = pd.concat([pd.read_excel(f, usecols=['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK']) for f in _xlsx], ignore_index=True)
+        _dr_risk = _dr[pd.to_numeric(_dr['DEFAULT RISK'], errors='coerce').fillna(0) > 0]
+        dr_folios = set(_dr_risk['FOLIO'].dropna().astype(str).str.strip().unique())
+        del _dr, _dr_risk
+    else:
+        print("  DEFAULT RISK column not in domain xlsx files — Default Risk counts will be 0")
 print(f"  {len(dr_folios):,} unique FOLIOs with Default Risk")
-del _dr, _dr_risk
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def extract_days(val):
@@ -134,9 +163,19 @@ def domain_distress_counts(df_sub):
 # Reads all xlsx files from Fulfillments/ folder — no pre-built file needed
 # ══════════════════════════════════════════════════════════════════════════════
 print("Compiling fulfillment files...")
-_ff_files = sorted(f for f in FULFILLMENTS_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
+_all_ff = sorted(f for f in FULFILLMENTS_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
+_ff_files = [
+    f for f in _all_ff
+    if WINDOW_START <= pd.Timestamp(f.name[:7]) <= WINDOW_END
+]
 if not _ff_files:
-    raise FileNotFoundError(f"No fulfillment files found in {FULFILLMENTS_DIR}")
+    raise FileNotFoundError(
+        f"No fulfillment files found for window "
+        f"{WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
+        f"in {FULFILLMENTS_DIR}"
+    )
+print(f"  Window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
+      f"({len(_ff_files)} of {len(_all_ff)} file(s) in folder)")
 
 _parts = []
 for _f in _ff_files:
@@ -205,10 +244,16 @@ print(f"  Column C ready: {len(ff_agg):,} properties")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 2: Columns F and G — fulfillment-matched leads/deals only (345 + 4)
+# STEP 2: Columns F and G — fulfillment-matched leads/deals only
 # ══════════════════════════════════════════════════════════════════════════════
-print("\nLoading Deals and Leads Freedom...")
-dl = pd.read_excel(DEALS_PATH)
+_dl_files = sorted(
+    f for f in DOCS_DIR.glob("*.xlsx")
+    if re.search(r'leads|deals', f.name, re.IGNORECASE) and not f.name.startswith("~$")
+)
+if not _dl_files:
+    raise FileNotFoundError(f"No leads/deals file found in {DOCS_DIR}")
+print(f"\nLoading Deals and Leads ({len(_dl_files)} file(s)): {[f.name for f in _dl_files]}")
+dl = pd.concat([pd.read_excel(f) for f in _dl_files], ignore_index=True)
 dl['LIKELY DEAL SCORE']   = pd.to_numeric(dl['LIKELY DEAL SCORE'],   errors='coerce')
 dl['SCORE']               = pd.to_numeric(dl['SCORE'],               errors='coerce')
 for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
@@ -220,24 +265,34 @@ dl.loc[dl['FOLIO_key'] == 'nan', 'FOLIO_key'] = np.nan
 
 # ── Filter leads/deals to on or after CLIENT_START_DATE ──────────────────────
 # Date filter per status:
-#   Lead        → LEAD DATE
-#   Appointment → APPOINTMENT DATE  (counted as Lead in report)
-#   Deal        → LAST SALE DATE
-#   Contract    → no date column → excluded
+#   Lead        → LEAD DATE        (blank date → included, can't rule it out)
+#   Appointment → APPOINTMENT DATE (blank date → included; counted as Lead in report)
+#   Dead Lead   → LEAD DATE        (blank date → included; counted as Lead in report)
+#   Contract    → LEAD DATE (if available; blank date → included; counted as Lead in report)
+#   Deal        → LAST SALE DATE   (must have a valid date)
 print(f"  Rows before date filter: {len(dl):,}")
 dl['_date_col'] = pd.NaT
 dl.loc[dl['PROPERTY STATUS'] == 'Lead',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Lead',        'LEAD DATE'],        errors='coerce')
 dl.loc[dl['PROPERTY STATUS'] == 'Appointment', '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'APPOINTMENT DATE'], errors='coerce')
+dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   'LEAD DATE'],        errors='coerce')
+dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Contract',    'LEAD DATE'],        errors='coerce')
 dl.loc[dl['PROPERTY STATUS'] == 'Deal',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Deal',        'LAST SALE DATE'],   errors='coerce')
-# Contracts have no date → _date_col stays NaT → excluded by filter below
+# Contracts use LEAD DATE if available; blank → included as lead (uncertain, can't rule out)
 
-dl = dl[dl['_date_col'] >= CLIENT_START_DATE].drop(columns=['_date_col'])
+# Lead-type statuses: include if date >= CLIENT_START_DATE OR date is blank (uncertain, can't rule out)
+# Deals: must have a valid LAST SALE DATE >= CLIENT_START_DATE
+_lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
+_keep = (
+    (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= CLIENT_START_DATE))) |
+    (~_lead_types & (dl['_date_col'] >= CLIENT_START_DATE))
+)
+dl = dl[_keep].drop(columns=['_date_col'])
 
-# Appointments and Contracts counted as Leads in the final report
-dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'PROPERTY STATUS'] = 'Lead'
+# Appointments, Dead Leads, and Contracts counted as Leads in the final report
+dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
 
-print(f"  Rows after date filter (>= {CLIENT_START_DATE.date()}): {len(dl):,}")
-print(f"    Leads (incl. appointments): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
+print(f"  Rows after date filter (>= {CLIENT_START_DATE.date()}, blanks kept for leads): {len(dl):,}")
+print(f"    Leads (incl. appointments + dead leads): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
 
 ff_for_join = ff_agg.reset_index().rename(columns={'FOLIO': 'FOLIO_key'})
 dl = dl.merge(ff_for_join, on='FOLIO_key', how='left')
@@ -364,15 +419,15 @@ print(f"  Column B ready — total: {sum(B_likely.values()):,}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 4: Column D — Sold since Oct 1 2025
+# STEP 4: Column D — Sold since start of fulfillment window
 # ══════════════════════════════════════════════════════════════════════════════
-print("\nComputing Column D (sold since Oct 1 2025, fulfillment only)...")
-sold_all = dom[dom['LAST SALE DATE'] >= '2025-10-01'].copy()
+print(f"\nComputing Column D (sold since {SOLD_SINCE.strftime('%Y-%m-%d')}, fulfillment only)...")
+sold_all = dom[dom['LAST SALE DATE'] >= SOLD_SINCE].copy()
 ff_join  = ff_agg[['ff_likely', 'ff_score', 'ff_days', 'ff_mkt']].reset_index()
 sold_all = sold_all.merge(ff_join, on='FOLIO', how='left')
 # Restrict to fulfillment-recommended properties only
 sold = sold_all[sold_all['ff_likely'].notna()].copy()
-print(f"  Sold since Oct 1: {len(sold_all):,} total | In fulfillment: {len(sold):,}")
+print(f"  Sold since {SOLD_SINCE.strftime('%Y-%m-%d')}: {len(sold_all):,} total | In fulfillment: {len(sold):,}")
 
 sold['d_likely'] = sold['ff_likely']
 sold['d_score']  = sold['ff_score']
@@ -388,32 +443,33 @@ print(f"  Column D ready — total: {sum(D_likely.values()):,}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# STEP 5: Column E — Market Deals (overlap: market deals ∩ domain sold, 1,367)
-# Same score resolution as Column D: prefer fulfillment (pre-sale), else domain
-# NOTE: Temporarily disabled — uncomment to re-enable Market Deals column
+# STEP 5: Column E — Market Deals
+# Properties believed to have been bought at a significant discount — typically bought and resold
+# for a profit in a short period of time. Computed as the overlap between the Market Deals file
+# and the fulfillment-sold subset (Column D). Same score resolution as Column D: pre-sale fulfillment MAX values.
 # ══════════════════════════════════════════════════════════════════════════════
-# print("\nComputing Column E (market deals x fulfillment)...")
-# md = pd.read_excel(MARKET_PATH)
-# md_ids = set(md['PropertyID'].dropna().astype(int).unique())
-#
-# # Overlap: market deal BUYBOX IDs within the fulfillment-sold subset
-# ff_sold_buybox_ids = set(sold['buybox_int'].dropna().astype(int).unique())
-# overlap_ids = md_ids & ff_sold_buybox_ids
-# print(f"  Market deals unique: {len(md_ids):,} | Fulfillment-sold: {len(ff_sold_buybox_ids):,} | Overlap: {len(overlap_ids):,}")
-#
-# # Filter fulfillment-sold to market deal properties
-# mkt_sold = sold[sold['buybox_int'].isin(overlap_ids)].copy()
-#
-# E_likely = count_by_bin(mkt_sold['d_likely'], likely_bins, likely_labels)
-# E_score  = count_by_bin(mkt_sold['d_score'],  score_bins,  score_labels)
-# E_action = count_by_action(mkt_sold['d_days'], action_map)
-# E_mkt    = count_by_bin(mkt_sold['d_mkt'], mkt_bins, mkt_labels)
-# E_dist   = domain_distress_counts(mkt_sold)
-# print(f"  Column E ready — total: {sum(E_likely.values()):,}")
-#
-# print(f"\n=== COLUMN E (market deals) ===")
-# print("Likely Deal Score:", E_likely)
-# print("Action Plan:", E_action)
+print("\nComputing Column E (market deals x fulfillment)...")
+md = pd.read_excel(MARKET_PATH)
+md_ids = set(md['PropertyID'].dropna().astype(int).unique())
+
+# Overlap: market deal BUYBOX IDs within the fulfillment-sold subset
+ff_sold_buybox_ids = set(sold['buybox_int'].dropna().astype(int).unique())
+overlap_ids = md_ids & ff_sold_buybox_ids
+print(f"  Market deals unique: {len(md_ids):,} | Fulfillment-sold: {len(ff_sold_buybox_ids):,} | Overlap: {len(overlap_ids):,}")
+
+# Filter fulfillment-sold to market deal properties
+mkt_sold = sold[sold['buybox_int'].isin(overlap_ids)].copy()
+
+E_likely = count_by_bin(mkt_sold['d_likely'], likely_bins, likely_labels)
+E_score  = count_by_bin(mkt_sold['d_score'],  score_bins,  score_labels)
+E_action = count_by_action(mkt_sold['d_days'], action_map)
+E_mkt    = count_by_bin(mkt_sold['d_mkt'], mkt_bins, mkt_labels)
+E_dist   = domain_distress_counts(mkt_sold)
+print(f"  Column E ready — total: {sum(E_likely.values()):,}")
+
+print(f"\n=== COLUMN E (market deals) ===")
+print("Likely Deal Score:", E_likely)
+print("Action Plan:", E_action)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -422,7 +478,7 @@ print(f"  Column D ready — total: {sum(D_likely.values()):,}")
 def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
                C_lik, C_sco, C_act, C_mkt, C_dis,
                D_lik, D_sco, D_act, D_mkt, D_dis,
-               # E_lik, E_sco, E_act, E_mkt, E_dis,  # Market Deals — disabled
+               E_lik, E_sco, E_act, E_mkt, E_dis,
                F_lik, F_sco, F_act, F_mkt, F_dis,
                G_lik, G_sco, G_act, G_mkt, G_dis):
     n = len(COLS)
@@ -430,16 +486,16 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
     def section_header(name):
         r = list(COLS); r[0] = name; return r
 
-    def data_row(label, b, c, d, f, g):
+    def data_row(label, b, c, d, e, f, g):
         r = [''] * n
         r[0] = label
         r[1] = b    # B — Total Properties
         r[2] = c    # C — Properties in the fulfillment
         r[3] = d    # D — Sold
-        # r[4] = e  # E — Market Deals (disabled)
-        r[4] = f    # E (Excel) — Clients Lead
-        r[5] = g    # F (Excel) — Client Deals
-        # G–I left empty here; formulas written during Excel rendering
+        r[4] = e    # E — Market Deals
+        r[5] = f    # F — Clients Lead
+        r[6] = g    # G — Client Deals
+        # H–K left empty here; formulas written during Excel rendering
         return r
 
     def blank():
@@ -449,32 +505,32 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
 
     rows.append(section_header('Likely Deal Score'))
     for lbl in ['100-81', '80-61', '60-41', '40-21', '20-0']:
-        rows.append(data_row(lbl, B_lik[lbl], C_lik[lbl], D_lik[lbl], F_lik[lbl], G_lik[lbl]))
-    rows.append(data_row('Total', sum(B_lik.values()), sum(C_lik.values()), sum(D_lik.values()), sum(F_lik.values()), sum(G_lik.values())))
+        rows.append(data_row(lbl, B_lik[lbl], C_lik[lbl], D_lik[lbl], E_lik[lbl], F_lik[lbl], G_lik[lbl]))
+    rows.append(data_row('Total', sum(B_lik.values()), sum(C_lik.values()), sum(D_lik.values()), sum(E_lik.values()), sum(F_lik.values()), sum(G_lik.values())))
     rows.append(blank())
 
     rows.append(section_header('Total Score'))
     for lbl in ['1000-801', '800-601', '600-401', '400-201', '200-0']:
-        rows.append(data_row(lbl, B_sco[lbl], C_sco[lbl], D_sco[lbl], F_sco[lbl], G_sco[lbl]))
-    rows.append(data_row('Total', sum(B_sco.values()), sum(C_sco.values()), sum(D_sco.values()), sum(F_sco.values()), sum(G_sco.values())))
+        rows.append(data_row(lbl, B_sco[lbl], C_sco[lbl], D_sco[lbl], E_sco[lbl], F_sco[lbl], G_sco[lbl]))
+    rows.append(data_row('Total', sum(B_sco.values()), sum(C_sco.values()), sum(D_sco.values()), sum(E_sco.values()), sum(F_sco.values()), sum(G_sco.values())))
     rows.append(blank())
 
     rows.append(section_header('Action Plan'))
     for lbl in ['30 day', '60 day', '90 day']:
-        rows.append(data_row(lbl, B_act[lbl], C_act[lbl], D_act[lbl], F_act[lbl], G_act[lbl]))
-    rows.append(data_row('Total', sum(B_act.values()), sum(C_act.values()), sum(D_act.values()), sum(F_act.values()), sum(G_act.values())))
+        rows.append(data_row(lbl, B_act[lbl], C_act[lbl], D_act[lbl], E_act[lbl], F_act[lbl], G_act[lbl]))
+    rows.append(data_row('Total', sum(B_act.values()), sum(C_act.values()), sum(D_act.values()), sum(E_act.values()), sum(F_act.values()), sum(G_act.values())))
     rows.append(blank())
 
     rows.append(section_header('Mkt Count'))
     for lbl in ['1 to 5', '6 to 10', '11 to 19', '20+']:
-        rows.append(data_row(lbl, B_mkt[lbl], C_mkt[lbl], D_mkt[lbl], F_mkt[lbl], G_mkt[lbl]))
-    rows.append(data_row('Total', sum(B_mkt.values()), sum(C_mkt.values()), sum(D_mkt.values()), sum(F_mkt.values()), sum(G_mkt.values())))
+        rows.append(data_row(lbl, B_mkt[lbl], C_mkt[lbl], D_mkt[lbl], E_mkt[lbl], F_mkt[lbl], G_mkt[lbl]))
+    rows.append(data_row('Total', sum(B_mkt.values()), sum(C_mkt.values()), sum(D_mkt.values()), sum(E_mkt.values()), sum(F_mkt.values()), sum(G_mkt.values())))
     rows.append(blank())
 
     rows.append(section_header('Distress'))
     for dtype in distress_order:
-        rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], F_dis[dtype], G_dis[dtype]))
-    rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
+        rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], E_dis[dtype], F_dis[dtype], G_dis[dtype]))
+    rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(E_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
 
     return rows
 
@@ -512,33 +568,113 @@ def write_excel(path, rows, sheet_title):
         cell.alignment = header_align; cell.border = thin
     ws.row_dimensions[1].height = 36
 
-    # Header comments — one per column explaining the calculation
+    # Header comments — one per column, visible as hover tooltips in Excel
     header_comments = {
-        'A': "Category\nSection headers (Likely Deal Score, Total Score, Action Plan, Mkt Count, Distress) and their range labels.",
-        'B': "Total Properties\nAll domain properties with BUYBOX SCORE > 0.\nLikely/Total Score: all scored. Action Plan: only properties with an action plan. Mkt Count: only properties with mkt contacts > 0. Distress: binary columns including DEFAULT RISK (now in domain file).",
-        'C': "Properties in the Fulfillment\n37,338 unique FOLIOs across 5 fulfillment files (Oct–Dec 2025).\nScores: MAX across all months. Action Plan: best (lowest days). Mkt Count: latest month DM+SMS; properties with 0 contacts counted as 1 (recommended at least once). Distress: MAIN DISTRESS #1–4 + binary VACANT.",
-        'D': "Sold\nProperties sold since Oct 1 2025 that were also recommended in a fulfillment (390).\nScores come from fulfillment MAX (pre-sale picture). Distress from domain binary columns.",
-        # 'E': "Market Deals — disabled (see STEP 5)",
-        'E': "Clients Lead\n345 leads from Deals & Leads Atlas matched to the fulfillment via FOLIO.\nScores: fulfillment MAX. Mkt: 0 contacts treated as 1. 503 leads not in fulfillment are excluded.",
-        'F': "Client Deals\n4 deals from Deals & Leads Atlas matched to the fulfillment via FOLIO.\nScores: fulfillment MAX. 147 deals not in fulfillment are excluded.",
-        'G': "Sold Concentration %\nFormula: =D/C\nWhat % of fulfillment-recommended properties were sold since Oct 1.",
-        # 'H': "Sold to Investors Concentration — disabled (depends on Market Deals)",
-        'H': "Client Deals Concentration\nFormula: =F/C\nWhat % of fulfillment-recommended properties became a client deal.",
-        'I': "Client Leads Concentration\nFormula: =E/C\nWhat % of fulfillment-recommended properties became a client lead.",
+        'A': (
+            "Category\n"
+            "Row labels for each section. Section headers: Likely Deal Score, Total Score, "
+            "Action Plan, Mkt Count, Distress. Sub-rows are the range buckets or distress "
+            "types within each section, plus a Total row at the bottom of each section."
+        ),
+        'B': (
+            "Total Properties\n"
+            "All properties in the domain with BUYBOX SCORE > 0 — the full addressable universe.\n"
+            "Likely Deal Score / Total Score: all scored properties.\n"
+            "Action Plan: only properties that have an action plan assigned.\n"
+            "Mkt Count: only properties with at least 1 marketing contact (DM or SMS).\n"
+            "Distress: derived from binary domain columns; DEFAULT RISK is a direct domain column.\n"
+            "Owner Occupied: ABSENTEE == 0 (NaN excluded — unknown is not owner-occupied)."
+        ),
+        'C': (
+            "Properties in the Fulfillment\n"
+            "Unique properties (by FOLIO) recommended across all fulfillment files in the "
+            "3-month analysis window.\n"
+            "Scores: MAX across all months per property.\n"
+            "Action Plan: best (lowest day count) across all months.\n"
+            "Mkt Count: max(total DM contacts, total SMS contacts) — strongest channel only; "
+            "properties with 0 contacts are treated as 1 (recommended at least once).\n"
+            "Distress: MAIN DISTRESS #1–4 + binary VACANT + Default Risk cross-referenced "
+            "from domain by FOLIO.\n"
+            "Owner Occupied: cross-referenced from domain ABSENTEE column."
+        ),
+        'D': (
+            f"Sold\n"
+            f"Properties sold since {SOLD_SINCE.strftime('%b %d %Y')} that were also recommended in a fulfillment.\n"
+            f"Cutoff = start of the {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} fulfillment window.\n"
+            f"Only fulfillment-matched properties are included (domain-only sold properties excluded).\n"
+            f"Scores are pre-sale fulfillment MAX values (snapshot before the sale).\n"
+            f"Distress derived from domain binary columns on the sold subset."
+        ),
+        'E': (
+            "Market Deals\n"
+            "Properties believed to have been bought at a significant discount — typically bought and resold "
+            "for a profit in a short period of time. These represent investor market transactions that "
+            "overlapped with properties the client was recommended.\n"
+            "Source: properties that appear in both the Market Deals file and the fulfillment-sold subset.\n"
+            "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX).\n"
+            "Scores: pre-sale fulfillment MAX values (same as Column D).\n"
+            "Distress derived from domain binary columns on this overlap subset."
+        ),
+        'F': (
+            "Clients Lead\n"
+            "Leads, Appointments, Dead Leads, and Contracts from the Deals & Leads file "
+            "that matched a fulfillment property via FOLIO.\n"
+            "Status mapping: Lead, Appointment, Dead Lead, and Contract all count as a Lead here.\n"
+            "Date filter: Lead Date or Appointment Date >= client start date. "
+            "Blank dates are included — they cannot be ruled out.\n"
+            "Contracts use Lead Date if available; blank date — always included.\n"
+            "Only fulfillment-matched rows are counted. Unmatched rows are excluded.\n"
+            "Scores: fulfillment MAX values. Mkt: 0 contacts treated as 1."
+        ),
+        'G': (
+            "Client Deals\n"
+            "Deals from the Deals & Leads file that matched a fulfillment property via FOLIO.\n"
+            "Date filter: Last Sale Date >= client start date (must have a valid date).\n"
+            "Only fulfillment-matched deals are counted. Unmatched deals are excluded.\n"
+            "Scores: fulfillment MAX values."
+        ),
+        'H': (
+            "Sold Concentration %\n"
+            "Formula: =D/C\n"
+            f"Share of fulfillment-recommended properties that were sold since {SOLD_SINCE.strftime('%b %d %Y')}. "
+            "Measures how many of the recommended properties transacted."
+        ),
+        'I': (
+            "Sold to Investors Concentration\n"
+            "Formula: =E/C\n"
+            "Share of fulfillment-recommended properties that were sold to investors (market deals). "
+            "Measures investor acquisition rate within the fulfillment population."
+        ),
+        'J': (
+            "Client Deals Concentration\n"
+            "Formula: =G/C\n"
+            "Share of fulfillment-recommended properties that resulted in a client deal. "
+            "Measures deal conversion rate within the fulfillment population."
+        ),
+        'K': (
+            "Client Leads Concentration\n"
+            "Formula: =F/C\n"
+            "Share of fulfillment-recommended properties that generated a client lead "
+            "(includes Leads, Appointments, Dead Leads, and Contracts). "
+            "Measures lead engagement rate within the fulfillment population."
+        ),
     }
     for col_letter, text in header_comments.items():
         cell = ws[f'{col_letter}1']
-        cell.comment = Comment(text, "Atlas Report")
+        cmt = Comment(text, "Atlas Report")
+        cmt.width  = 400
+        cmt.height = 200
+        cell.comment = cmt
 
 
-    # Count columns (0-based): B=1, C=2, D=3, E(Leads)=4, F(Deals)=5
-    COUNT_COLS = [1, 2, 3, 4, 5]
-    # Formula columns (0-based): G=6, H=7, I=8
+    # Count columns (0-based): B=1, C=2, D=3, E(Market Deals)=4, F(Leads)=5, G(Deals)=6
+    COUNT_COLS = [1, 2, 3, 4, 5, 6]
+    # Formula columns (0-based): H=7, I=8, J=9, K=10
     # Formulas reference 1-based Excel columns:
-    #   G = D/C  →  =IFERROR(D{r}/C{r},"")   Sold Concentration
-    #   H = F/C  →  =IFERROR(F{r}/C{r},"")   Client Deals Concentration
-    #   I = E/C  →  =IFERROR(E{r}/C{r},"")   Client Leads Concentration
-    #   [Market Deals col E and Sold to Investors col I disabled — see STEP 5]
+    #   H = D/C  →  =IFERROR(D{r}/C{r},"")   Sold Concentration
+    #   I = E/C  →  =IFERROR(E{r}/C{r},"")   Sold to Investors Concentration
+    #   J = G/C  →  =IFERROR(G{r}/C{r},"")   Client Deals Concentration
+    #   K = F/C  →  =IFERROR(F{r}/C{r},"")   Client Leads Concentration
 
     for row_data in rows:
         ws.append(row_data)
@@ -573,14 +709,14 @@ def write_excel(path, rows, sheet_title):
                 ws[r][ci].font      = c_font
                 ws[r][ci].alignment = center_align
 
-            # Write formulas for G–I and format as percentage
-            ws[r][6].value      = f'=IFERROR(D{r}/C{r},"")'   # G: Sold / Fulfillment
-            ws[r][7].value      = f'=IFERROR(F{r}/C{r},"")'   # H: Client Deals / Fulfillment
-            ws[r][8].value      = f'=IFERROR(E{r}/C{r},"")'   # I: Client Leads / Fulfillment
-            # ws[r][?].value = f'=IFERROR(E{r}/C{r},"")' — Market Deals disabled (see STEP 5)
+            # Write formulas for H–K and format as percentage
+            ws[r][7].value  = f'=IFERROR(D{r}/C{r},"")'   # H: Sold / Fulfillment
+            ws[r][8].value  = f'=IFERROR(E{r}/C{r},"")'   # I: Market Deals / Fulfillment
+            ws[r][9].value  = f'=IFERROR(G{r}/C{r},"")'   # J: Client Deals / Fulfillment
+            ws[r][10].value = f'=IFERROR(F{r}/C{r},"")'   # K: Client Leads / Fulfillment
 
             pct_fmt = '0.0%'
-            for ci in [6, 7, 8]:
+            for ci in [7, 8, 9, 10]:
                 ws[r][ci].number_format = pct_fmt
                 ws[r][ci].font          = p_font
                 ws[r][ci].alignment     = center_align
@@ -588,7 +724,7 @@ def write_excel(path, rows, sheet_title):
 
     # Column widths
     ws.column_dimensions['A'].width = 32
-    for col_letter in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I']:
+    for col_letter in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K']:
         ws.column_dimensions[col_letter].width = 22
     ws.freeze_panes = 'A2'
 
@@ -600,7 +736,7 @@ rows = build_rows(
     B_likely, B_score, B_action, B_mkt, B_dist,
     C_likely, C_score, C_action, C_mkt, C_dist,
     D_likely, D_score, D_action, D_mkt, D_dist,
-    # E_likely, E_score, E_action, E_mkt, E_dist,  # Market Deals — disabled (see STEP 5)
+    E_likely, E_score, E_action, E_mkt, E_dist,
     F_likely, F_score, F_action, F_mkt, F_dist,
     G_likely, G_score, G_action, G_mkt, G_dist,
 )

@@ -147,7 +147,7 @@
     </div>
     <div class="cover-meta-item">
       <label>Version</label>
-      <span>1.0</span>
+      <span>2.0</span>
     </div>
   </div>
 
@@ -173,27 +173,32 @@
   <div class="kpi-row">
     <div class="kpi-card">
       <div class="kpi-label">Domain Properties</div>
-      <div class="kpi-value">136,669</div>
+      <div class="kpi-value">254,915</div>
       <div class="kpi-context">BUYBOX Score &gt; 0</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Fulfillment FOLIOs</div>
-      <div class="kpi-value">37,338</div>
+      <div class="kpi-value">233,266</div>
       <div class="kpi-context">Unique properties</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Sold Since Oct '25</div>
-      <div class="kpi-value">390</div>
+      <div class="kpi-label">Sold Since Aug '25</div>
+      <div class="kpi-value">4,887</div>
       <div class="kpi-context">In fulfillment</div>
     </div>
     <div class="kpi-card">
+      <div class="kpi-label">Market Deals</div>
+      <div class="kpi-value">3,284</div>
+      <div class="kpi-context">Investor overlap</div>
+    </div>
+    <div class="kpi-card">
       <div class="kpi-label">Client Leads</div>
-      <div class="kpi-value">345+</div>
+      <div class="kpi-value">4,690</div>
       <div class="kpi-context">Fulfillment-matched</div>
     </div>
     <div class="kpi-card">
       <div class="kpi-label">Client Deals</div>
-      <div class="kpi-value">4+</div>
+      <div class="kpi-value">41</div>
       <div class="kpi-context">Fulfillment-matched</div>
     </div>
   </div>
@@ -201,16 +206,17 @@
   <div class="two-col">
     <div class="col">
       <div class="sub-section-header">What the Report Produces</div>
-      <p style="font-size:0.85rem; margin-bottom:10px;">The output is a single Excel file (<span style="font-family:monospace; font-size:0.8rem; color:#0B5394;">Expected_Result_Max_BCDFG_InFulfillment.xlsx</span>) with one row per distress category and these columns:</p>
+      <p style="font-size:0.85rem; margin-bottom:10px;">The output is a single Excel file named <span style="font-family:monospace; font-size:0.8rem; color:#0B5394;">{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx</span> (e.g. <span style="font-family:monospace; font-size:0.8rem; color:#0B5394;">SBD - Distress Report - 2026-04.xlsx</span>) with one row per distress category and these columns:</p>
       <table>
         <thead><tr><th>Col</th><th>Description</th><th>Source</th></tr></thead>
         <tbody>
           <tr><td class="mono">B</td><td>Total Properties</td><td>Domain (BUYBOX &gt; 0)</td></tr>
           <tr><td class="mono">C</td><td>In Fulfillment</td><td>Fulfillment MAX logic</td></tr>
-          <tr><td class="mono">D</td><td>Sold since Oct 1, 2025</td><td>Domain last sale date</td></tr>
-          <tr><td class="mono">E</td><td>Client Leads</td><td>Leads + Appointments</td></tr>
-          <tr><td class="mono">F</td><td>Client Deals</td><td>Fulfillment-matched deals</td></tr>
-          <tr><td class="mono">G–I</td><td>Concentration %</td><td>Excel formulas (=D/C etc.)</td></tr>
+          <tr><td class="mono">D</td><td>Sold since Aug 1, 2025</td><td>Domain last sale date</td></tr>
+          <tr><td class="mono">E</td><td>Market Deals</td><td>Properties bought at a significant discount, resold for profit in a short period — investor deals ∩ fulfillment-sold</td></tr>
+          <tr><td class="mono">F</td><td>Clients Lead</td><td>Leads + Appointments + Dead Leads + Contracts</td></tr>
+          <tr><td class="mono">G</td><td>Client Deals</td><td>Fulfillment-matched deals</td></tr>
+          <tr><td class="mono">H–K</td><td>Concentration %</td><td>Excel formulas (D/C, E/C, G/C, F/C)</td></tr>
         </tbody>
       </table>
     </div>
@@ -219,15 +225,17 @@
       <div class="code-block"><span class="comment"># Working directory layout</span>
 Distress Report/
 ├── build_domain_report.py   <span class="comment"># MAIN script</span>
-├── build_population.py      <span class="comment"># Step 1 & 3</span>
-├── build_reports.py         <span class="comment"># Step 2 (Col C only)</span>
-├── compile_domain.py        <span class="comment"># One-time setup</span>
-├── Fulfillments/            <span class="comment"># Source xlsx files</span>
-├── Documents/               <span class="comment"># Deals & Leads file</span>
-├── Domain Full Data/        <span class="comment"># domain.parquet</span>
-├── Market Deals/            <span class="comment"># (disabled)</span>
+├── compile_domain.py        <span class="comment"># Re-run when domain files change</span>
+├── Fulfillments/            <span class="comment"># Monthly source xlsx files</span>
+├── Documents/               <span class="comment"># Deals &amp; Leads file</span>
+├── Domain Full Data/        <span class="comment"># domain.parquet + source xlsx</span>
+├── Market Deals/            <span class="comment"># SBD Market Deals.xlsx</span>
 └── Expected Result/         <span class="comment"># Template CSV</span></div>
     </div>
+  </div>
+
+  <div class="insight-box positive">
+    <p><strong>Fulfillment Window Rule:</strong> Standard is 6 months ending 3 months before the analysis date. Formula: <strong>most recent month = analysis month − 3</strong>, then include the 5 months before that (6 total). Example: analysis in April 2026 → use August 2025 through January 2026. <strong>Fallback:</strong> if 6 months of files are not available, use 3 months; if fewer than 3 are available, use whatever is there. The window and Column D sold cutoff are computed dynamically at runtime — nothing is hardcoded.</p>
   </div>
 
   <div class="insight-box">
@@ -249,7 +257,7 @@ Distress Report/
   </div>
 
   <span class="section-label">Data Preparation — Steps 1 & 2</span>
-  <div class="action-title">Start by placing input files in the correct folders, then compile fulfillment data into a single dataset before running any report script.</div>
+  <div class="action-title">Start by placing input files in the correct folders. If new domain files were received, rebuild the domain cache before running the report.</div>
 
   <!-- STEP 1 -->
   <div class="step-header">
@@ -261,13 +269,14 @@ Distress Report/
     <table>
       <thead><tr><th>Folder</th><th>Required Files</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr><td class="mono">Fulfillments/</td><td>Monthly fulfillment .xlsx files (Oct–Dec 2025)</td><td>Each file must include FOLIO, LIKELY DEAL SCORE, MAIN DISTRESS #1–4, ACTION PLANS, MARKETING DM/SMS COUNT</td></tr>
-        <tr><td class="mono">Documents/</td><td><code>Deals and Leads Freedom.xlsx</code></td><td>Must include PROPERTY STATUS, FOLIO, LEAD DATE, APPOINTMENT DATE, LAST SALE DATE columns</td></tr>
-        <tr><td class="mono">Domain Full Data/</td><td><code>domain.parquet</code></td><td>Generated once by <code>compile_domain.py</code> — see Step 3</td></tr>
+        <tr><td class="mono">Fulfillments/</td><td>Monthly fulfillment .xlsx files covering the analysis window</td><td>Filenames must start with YYYY-MM. Each file needs FOLIO, LIKELY DEAL SCORE, MAIN DISTRESS #1–4, ACTION PLANS, MARKETING DM/SMS COUNT. The script auto-selects the 6 months ending 3 months before today. If fewer than 6 files exist, it falls back to 3 months, then uses whatever is available.</td></tr>
+        <tr><td class="mono">Documents/</td><td>Any <code>.xlsx</code> whose name contains <em>leads</em> or <em>deals</em> (case-insensitive). Multiple files are auto-discovered and concatenated.</td><td>Must include PROPERTY STATUS, FOLIO, LEAD DATE, APPOINTMENT DATE, LAST SALE DATE. PROPERTY STATUS values: Lead, Appointment, Dead Lead, Contract (all → Column F); Deal (→ Column G).</td></tr>
+        <tr><td class="mono">Domain Full Data/</td><td>Two <code>.xlsx</code> domain parts + <code>domain.parquet</code></td><td>Parquet is generated by <code>compile_domain.py</code> — see Step 2. Re-run compile whenever domain xlsx files are replaced.</td></tr>
+        <tr><td class="mono">Market Deals/</td><td>Client market deals <code>.xlsx</code> (e.g. <code>SBD Market Deals.xlsx</code>)</td><td>Must include a <code>PropertyID</code> column matching domain BUYBOX IDs. Update <code>MARKET_PATH</code> in the script when switching clients.</td></tr>
       </tbody>
     </table>
     <div class="insight-box warn mt-12">
-      <p><strong>Claude Code prompt to verify files:</strong> <em>"Check that all required input files exist in Fulfillments/, Documents/, and Domain Full Data/ and list any that are missing."</em></p>
+      <p><strong>Claude Code prompt to verify files:</strong> <em>"Check that all required input files exist in Fulfillments/, Documents/, Domain Full Data/, and Market Deals/ and list any that are missing."</em></p>
     </div>
   </div>
 
@@ -276,35 +285,34 @@ Distress Report/
   <!-- STEP 2 -->
   <div class="step-header">
     <div class="step-badge">2</div>
-    <div class="step-title">Compile Fulfillment Data <span class="tag green">Generates: Fulfillment_Compilation.xlsx</span></div>
+    <div class="step-title">Compile the Domain Cache <span class="tag amber">Re-run when domain files change</span></div>
   </div>
-  <p style="font-size:0.85rem; margin-bottom:10px; margin-left:40px;">This step reads all files in <code>Fulfillments/</code>, adds Month, Marketing_Channel, and Source_File columns, and stacks them into one master dataset (77,000 rows, 37,338 unique FOLIOs).</p>
+  <p style="font-size:0.85rem; margin-bottom:10px; margin-left:40px;">The domain data ships as two large Excel parts. <code>compile_domain.py</code> merges them and saves a fast-loading <code>domain.parquet</code> file. Only run this when you receive updated domain xlsx files — the parquet persists between report runs.</p>
 
   <div style="margin-left:40px;">
     <div class="two-col">
       <div class="col">
         <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Run in terminal</div>
-        <div class="code-block"><span class="cmd">python build_population.py</span></div>
+        <div class="code-block"><span class="cmd">python compile_domain.py</span></div>
         <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Or prompt Claude Code</div>
-        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run build_population.py and confirm how many rows and unique FOLIOs were compiled."</div>
+        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run compile_domain.py and confirm how many rows and unique FOLIOs are in the new parquet."</div>
       </div>
       <div class="col">
         <div class="sub-section-header">Expected Console Output</div>
         <div class="code-block"><span class="comment"># Successful run looks like:</span>
-Loading Fulfillments/...
-  oct-2025-sms.xlsx → 31,024 rows
-  nov-2025-sms.xlsx → 16,311 rows
-  dec-2025-dm.xlsx  → 25,040 rows
-  ...
-Compiled: 77,000 rows
-Unique FOLIOs: 37,338
-Saved → Fulfillment_Compilation.xlsx
-Saved → Population_For_Calculation.xlsx</div>
+Found 2 file(s): ['...part_1.xlsx', '...part_2.xlsx']
+Reading part 1: ...
+  500,000 rows
+Reading part 2: ...
+  216,089 rows
+Combined: 716,089 rows, 709,929 unique FOLIOs
+
+Saved: Domain Full Data/domain.parquet</div>
       </div>
     </div>
 
     <div class="insight-box">
-      <p><strong>What this also produces:</strong> <code>Population_For_Calculation.xlsx</code> — one row per unique property (37,338 rows) with every value used in MAX and AVERAGE calculations. This is your audit file.</p>
+      <p><strong>Note on DEFAULT RISK:</strong> Some domain exports include a <code>DEFAULT RISK</code> column; others do not. The script detects this automatically. If the column is absent, Default Risk counts will be 0 and a warning is printed — no crash, no manual intervention needed.</p>
     </div>
   </div>
 
@@ -323,18 +331,41 @@ Saved → Population_For_Calculation.xlsx</div>
   </div>
 
   <span class="section-label">Report Generation — Steps 3, 4 & 5</span>
-  <div class="action-title">With fulfillment data compiled, build the domain cache once, then run the main report script to produce the final Excel output.</div>
+  <div class="action-title">With files organized and the domain cache ready, run the main script. It handles fulfillment compilation, all column calculations, and Excel formatting in a single pass.</div>
 
   <!-- STEP 3 -->
   <div class="step-header">
     <div class="step-badge">3</div>
-    <div class="step-title">Build the Domain Cache <span class="tag amber">One-time setup</span></div>
+    <div class="step-title">Run the Full Report <span class="tag green">Main output</span></div>
   </div>
   <div style="margin-left:40px; margin-bottom:14px;">
-    <p style="font-size:0.85rem; margin-bottom:8px;">The domain data ships as two large Excel parts. <code>compile_domain.py</code> merges them and saves a fast-loading <code>domain.parquet</code> file. <strong>Only run this once</strong> — or when you receive updated domain files.</p>
-    <div class="code-block"><span class="cmd">python compile_domain.py</span>
-<span class="comment"># Output: Domain Full Data/domain.parquet (536,941 rows)
-# DEFAULT RISK is embedded directly in this parquet — no separate file needed.</span></div>
+    <p style="font-size:0.85rem; margin-bottom:8px;">This is the only script you need to run for a standard report. It compiles fulfillment files, loads the domain parquet, computes all columns (B–G), writes concentration formulas (H–K), and saves the final Excel output. The fulfillment compilation audit file is also saved automatically each run.</p>
+    <div class="two-col">
+      <div class="col">
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Run in terminal</div>
+        <div class="code-block"><span class="cmd">python build_domain_report.py</span>
+<span class="comment"># Output: {CLIENT_NAME} - Distress Report - YYYY-MM.xlsx
+#         e.g. SBD - Distress Report - 2026-04.xlsx
+# Audit:  Fulfillment_Compilation.xlsx</span></div>
+        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Or prompt Claude Code</div>
+        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run build_domain_report.py and give me a summary of the output — total properties, fulfillment count, sold, market deals, leads, and deals."</div>
+      </div>
+      <div class="col">
+        <div class="sub-section-header">Before running — client settings</div>
+        <div class="code-block"><span class="comment"># Top of build_domain_report.py — update for each client</span>
+CLIENT_NAME       = <span style="color:#f5a623;">"SBD"</span>
+<span class="comment"># Used in output filename: {CLIENT_NAME} - Distress Report - YYYY-MM.xlsx</span>
+
+CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2023-09-26"</span>)
+<span class="comment"># SBD start date with 8020REI</span>
+
+MARKET_PATH = BASE / <span style="color:#f5a623;">"Market Deals"</span> / <span style="color:#f5a623;">"SBD Market Deals.xlsx"</span>
+<span class="comment"># Update filename for each new client</span></div>
+        <div class="insight-box positive" style="margin-top:8px;">
+          <p><strong>The analysis window is fully automatic.</strong> The script computes the 6-month window from today's date at runtime — no date needs to be changed between monthly runs.</p>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="divider"></div>
@@ -342,15 +373,19 @@ Saved → Population_For_Calculation.xlsx</div>
   <!-- STEP 4 -->
   <div class="step-header">
     <div class="step-badge">4</div>
-    <div class="step-title">Optional — Column C Only Report <span class="tag">Quick validation</span></div>
+    <div class="step-title">Review Console Output</div>
   </div>
   <div style="margin-left:40px; margin-bottom:14px;">
-    <p style="font-size:0.85rem; margin-bottom:8px;">Run <code>build_reports.py</code> to generate a Column C-only report before the full run. Useful for validating score bucketing, action plans, distress counts, and marketing count logic against the expected result template.</p>
-    <div class="code-block"><span class="cmd">python build_reports.py</span>
-<span class="comment"># Outputs: Expected_Result_Max.xlsx, Expected_Result_Average.xlsx</span></div>
-    <div class="insight-box">
-      <p><strong>Claude Code prompt:</strong> <em>"Run build_reports.py and compare the Likely Deal Score distribution in the output against the values in Expected Result/Atlas - Expected Result.csv."</em></p>
-    </div>
+    <p style="font-size:0.85rem; margin-bottom:8px;">After a successful run, the console prints a clear summary. Verify these key lines before opening the Excel file:</p>
+    <div class="code-block"><span class="comment"># Key lines to check:</span>
+Fulfillment window: 2025-08 – 2026-01 (6 of 6 file(s) in folder)
+  Total: 668,000 rows, 233,266 unique FOLIOs
+  273,042 unique FOLIOs with Default Risk
+  Domain with BUYBOX SCORE &gt; 0: 254,915
+  Sold since 2025-08-01: 25,623 total | In fulfillment: 4,887
+  Market deals unique: 20,223 | Fulfillment-sold: 4,886 | Overlap: 3,283
+  Columns F/G ready — Leads: 4,690 | Deals: 41
+  Saved: SBD - Distress Report - 2026-04.xlsx</div>
   </div>
 
   <div class="divider"></div>
@@ -358,24 +393,14 @@ Saved → Population_For_Calculation.xlsx</div>
   <!-- STEP 5 -->
   <div class="step-header">
     <div class="step-badge">5</div>
-    <div class="step-title">Run the Full Report <span class="tag green">Main output</span></div>
+    <div class="step-title">Optional — Column C Only Validation <span class="tag">Quick check</span></div>
   </div>
   <div style="margin-left:40px;">
-    <p style="font-size:0.85rem; margin-bottom:8px;">This is the primary script. It loads all data sources, applies MAX logic across all columns, handles Deals/Leads/Appointments filtering by <code>CLIENT_START_DATE</code>, writes Excel formulas for concentration columns, and saves the final report.</p>
-    <div class="code-block"><span class="cmd">python build_domain_report.py</span>
-<span class="comment"># Output: Expected_Result_Max_BCDFG_InFulfillment.xlsx</span></div>
-
-    <div class="two-col">
-      <div class="col">
-        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Before running — set client start date</div>
-        <div class="code-block"><span class="comment"># Line ~36 of build_domain_report.py</span>
-CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</span>)
-<span class="comment"># Change this for each new client</span></div>
-      </div>
-      <div class="col">
-        <div style="font-size:0.75rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; color:#666; margin-bottom:6px;">Claude Code prompt to run & verify</div>
-        <div class="code-block" style="font-style:italic; color:#c8c8c8; background:#2a2a2a; font-family:'Helvetica Neue',sans-serif; font-size:0.78rem;">"Run build_domain_report.py. When done, open the output and tell me the Column C total for Pre-foreclosure and how many Client Leads (Col E) were matched."</div>
-      </div>
+    <p style="font-size:0.85rem; margin-bottom:8px;">Run <code>build_reports.py</code> to generate a Column C-only report. Useful for spot-checking score bucketing and distress counts against the expected result template before distributing the full report.</p>
+    <div class="code-block"><span class="cmd">python build_reports.py</span>
+<span class="comment"># Outputs: Expected_Result_Max.xlsx, Expected_Result_Average.xlsx</span></div>
+    <div class="insight-box">
+      <p><strong>Claude Code prompt:</strong> <em>"Run build_reports.py and compare the Likely Deal Score distribution in the output against the values in Expected Result/Atlas - Expected Result.csv."</em></p>
     </div>
   </div>
 
@@ -402,10 +427,9 @@ CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</sp
       <table>
         <thead><tr><th>File</th><th>Purpose</th></tr></thead>
         <tbody>
-          <tr><td class="mono">Expected_Result_Max_BCDFG<br>_InFulfillment.xlsx</td><td><strong>Primary output.</strong> Full report with all columns B–I.</td></tr>
-          <tr><td class="mono">Fulfillment_Compilation.xlsx</td><td>All fulfillment files stacked (77k rows). Used as input by main script.</td></tr>
-          <tr><td class="mono">Population_For_Calculation.xlsx</td><td>Audit file — one row per unique property with all calculated values.</td></tr>
-          <tr><td class="mono">Expected_Result_Max.xlsx</td><td>Column C only (MAX logic). For validation.</td></tr>
+          <tr><td class="mono">{CLIENT_NAME} - Distress Report<br>- YYYY-MM.xlsx</td><td><strong>Primary output.</strong> Full report with all columns B–K. Filename uses CLIENT_NAME and run month (e.g. <code>SBD - Distress Report - 2026-04.xlsx</code>).</td></tr>
+          <tr><td class="mono">Fulfillment_Compilation.xlsx</td><td>Audit file — all fulfillment rows stacked (668k rows for SBD). Written automatically each run.</td></tr>
+          <tr><td class="mono">Expected_Result_Max.xlsx</td><td>Column C only (MAX logic). For validation against template.</td></tr>
           <tr><td class="mono">Expected_Result_Average.xlsx</td><td>Column C only (AVERAGE logic). For validation.</td></tr>
         </tbody>
       </table>
@@ -414,9 +438,9 @@ CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</sp
       <ul class="bullet-list">
         <li><strong>Marketing Count:</strong> <code>max(total DM, total SMS)</code> per property across all months — not the sum. A property with 7 SMS + 4 DM = count of 7.</li>
         <li><strong>Action Plan:</strong> Minimum days (30 &lt; 60 &lt; 90) across all months — the most aggressive plan wins.</li>
-        <li><strong>Leads filter:</strong> <code>LEAD DATE ≥ CLIENT_START_DATE</code>. Appointments filtered by <code>APPOINTMENT DATE</code>, then reclassified as Leads.</li>
-        <li><strong>Contracts:</strong> Excluded — no reliable date column available.</li>
-        <li><strong>Owner Occupied:</strong> Derived from <code>ABSENTEE = 0</code> in domain via FOLIO join. Not available directly from fulfillment distress columns.</li>
+        <li><strong>Leads filter:</strong> Four statuses count as a Lead in Column F: <code>Lead</code>, <code>Appointment</code>, <code>Dead Lead</code>, and <code>Contract</code>. All are reclassified as Lead before counting. Date columns: Lead/Dead Lead/Contract → <code>LEAD DATE</code>; Appointment → <code>APPOINTMENT DATE</code>; Deal → <code>LAST SALE DATE</code>. <strong>Blank dates for lead-type statuses are included</strong> — the date is unknown but the record cannot be ruled out. Deals must have a valid date.</li>
+        <li><strong>Market Deals (Column E):</strong> Properties believed to have been bought at a significant discount — typically bought and resold for a profit in a short period of time. Computed as the overlap between the Market Deals file and the fulfillment-sold subset, joined via <code>PropertyID = PROPERTY ID (BUYBOX)</code>. Scores and distress are taken from pre-sale fulfillment values (same as Column D).</li>
+        <li><strong>Owner Occupied:</strong> Derived from <code>ABSENTEE = 0</code> in domain via FOLIO join. Not available directly from fulfillment distress columns — cross-referenced for all columns.</li>
       </ul>
     </div>
 
@@ -425,19 +449,23 @@ CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</sp
       <ol style="list-style:none; counter-reset:step; padding:0; margin-bottom:16px;">
         <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
           <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">1</span>
-          Replace <code>Deals and Leads Freedom.xlsx</code> in <code>Documents/</code> with the new client's file. Confirm column names match.
+          Drop the client's Deals &amp; Leads <code>.xlsx</code> into <code>Documents/</code>. The script auto-discovers any file whose name contains <em>leads</em> or <em>deals</em>.
         </li>
         <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
           <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">2</span>
-          Update <code>DEALS_PATH</code> and <code>CLIENT_START_DATE</code> at the top of <code>build_domain_report.py</code>.
+          Drop the client's Market Deals <code>.xlsx</code> into <code>Market Deals/</code> and update <code>MARKET_PATH</code> at the top of <code>build_domain_report.py</code>.
         </li>
         <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
           <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">3</span>
-          Drop the new fulfillment files in <code>Fulfillments/</code>. Re-run <code>build_population.py</code> to recompile.
+          Update <code>CLIENT_NAME</code> and <code>CLIENT_START_DATE</code> at the top of <code>build_domain_report.py</code>. CLIENT_NAME drives the output filename; CLIENT_START_DATE filters leads and deals.
         </li>
         <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
           <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">4</span>
-          Run <code>build_domain_report.py</code>. Only rerun <code>compile_domain.py</code> if you received new domain data files.
+          Drop the new fulfillment files in <code>Fulfillments/</code>. If new domain data was also provided, replace the xlsx parts in <code>Domain Full Data/</code> and re-run <code>compile_domain.py</code>.
+        </li>
+        <li style="counter-increment:step; display:flex; gap:10px; margin-bottom:10px; font-size:0.82rem; color:#2d2d2d; line-height:1.55; align-items:flex-start;">
+          <span style="font-family:Georgia,serif; min-width:22px; height:22px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0B5394; border:1.5px solid #0B5394; border-radius:50%; flex-shrink:0;">5</span>
+          Run <code>build_domain_report.py</code>.
         </li>
       </ol>
 
@@ -445,13 +473,13 @@ CLIENT_START_DATE = pd.to_datetime(<span style="color:#f5a623;">"2021-10-26"</sp
       <table>
         <thead><tr><th>Script</th><th>Use When</th></tr></thead>
         <tbody>
-          <tr><td class="mono">domain_check.py</td><td>Need to inspect domain column names or structure</td></tr>
-          <tr><td class="mono">market_deals_check.py</td><td>Re-enabling Market Deals column (currently disabled)</td></tr>
+          <tr><td class="mono">domain_check.py</td><td>Need to inspect domain column names or row counts</td></tr>
+          <tr><td class="mono">market_deals_check.py</td><td>Investigating market deal match rates or column structure</td></tr>
         </tbody>
       </table>
 
-      <div class="insight-box warn mt-12">
-        <p><strong>Market Deals column is disabled.</strong> The data and logic are intact in <code>build_domain_report.py</code> (STEP 5, commented out). See <code>HANDOFF.md</code> → "Market Deals Column — Re-enable Instructions" for the full checklist to turn it back on.</p>
+      <div class="insight-box positive mt-12">
+        <p><strong>Market Deals (Column E) is active.</strong> Powered by <code>SBD Market Deals.xlsx</code>, joined on <code>PropertyID</code> to the domain BUYBOX ID. Current run: 20,223 market deals → 3,284 overlapping with fulfillment-sold properties.</p>
       </div>
     </div>
   </div>

@@ -1,0 +1,9 @@
+# Generated audit file — too large for GitHub (100MB+ limit)
+Fulfillment_Compilation.xlsx
+
+# Temp log files
+*.log
+
+# Temp Excel lock files
+~$*.xlsx
+~$*.xls
