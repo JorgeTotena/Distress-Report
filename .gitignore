@@ -1,5 +1,11 @@
-# Generated audit file — too large for GitHub (100MB+ limit)
+# Generated audit file — too large for GitHub
 Fulfillment_Compilation.xlsx
+
+# Large source data files (>10MB) — not tracked in git
+Fulfillments/*.xlsx
+Domain Full Data/*.xlsx
+Domain Full Data/*.parquet
+Market Deals/*.xlsx
 
 # Temp log files
 *.log
