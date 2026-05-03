@@ -105,7 +105,7 @@ python build_domain_report.py
 ```
 
 This script does everything automatically:
-- Selects the correct 6-month fulfillment window based on today's date
+- Uses every `.xlsx` in `Fulfillments/` as the analysis window (folder defines the window)
 - Compiles all fulfillment files
 - Loads the domain parquet
 - Loads the deals & leads file
@@ -115,7 +115,13 @@ This script does everything automatically:
 
 **Output:** `SBD - Distress Report - YYYY-MM.xlsx` (e.g. `SBD - Distress Report - 2026-04.xlsx`)
 
-A side audit file is also written each run: `Fulfillment_Compilation.xlsx`
+A side audit file is also written each run: `Fulfillment_Compilation.xlsx`. The compilation contains every fulfillment row plus three validation columns appended at the end so you can spot-check the report:
+
+| Validation column | What it shows | Validates |
+|---|---|---|
+| `LAST SALE DATE` | Most recent sale per FOLIO from the domain | Column D (Sold) |
+| `PROPERTY STATUS` | `Lead` or `Deal` from the deals/leads file (Deal wins if both); blank if no match | Columns F / G |
+| `MARKET DEAL` | `Yes` if the FOLIO is in the Market Deals overlap, else `No` | Column E |
 
 ---
 
@@ -124,8 +130,8 @@ A side audit file is also written each run: `Fulfillment_Compilation.xlsx`
 | Column | Description |
 |--------|-------------|
 | B | Total Properties — all domain properties with BUYBOX SCORE > 0 |
-| C | Properties in the fulfillment — MAX aggregated metrics across the 6-month window |
-| D | Sold since start of fulfillment window — properties sold after the window opens |
+| C | Properties in the fulfillment — MAX aggregated metrics across the actual fulfillment window |
+| D | Sold since start of fulfillment window — properties sold from the first month with a fulfillment file onward |
 | E | Market Deals — investor purchases that overlap with Column D (sold properties) |
 | F | Client Leads — leads, appointments, dead leads, and contracts matched to fulfillment |
 | G | Client Deals — closed deals matched to fulfillment |
@@ -140,19 +146,19 @@ Each column includes sub-rows for distress breakdowns (Distress #1–4, Vacant, 
 
 ## Fulfillment Window Logic
 
-The script automatically calculates which fulfillment files to include based on today's date:
+**The window is defined entirely by the `.xlsx` files in `Fulfillments/`.** Drop in the months you want analyzed; remove the months you don't. Whatever is in the folder is what the report uses.
 
-- **Most recent month included** = Today's month − 3 months
-- **Window** = 6 months ending on that month
-- If fewer than 6 files are available, it uses whatever is there (minimum 1)
+- `WINDOW_START` / `SOLD_SINCE` = first day of the earliest file's month (e.g. `2025-11-08 ...xlsx` → `2025-11-01`)
+- `WINDOW_END` = first day of the latest file's month
+- Column D ("Sold") counts properties whose `LAST SALE DATE >= SOLD_SINCE` and that were also recommended in a fulfillment
 
-| Report Month | Most Recent File | 6-Month Window |
-|---|---|---|
-| April 2026 | January 2026 | Aug 2025 – Jan 2026 |
-| May 2026 | February 2026 | Sep 2025 – Feb 2026 |
-| June 2026 | March 2026 | Oct 2025 – Mar 2026 |
+| Earliest file in folder | `SOLD_SINCE` |
+|---|---|
+| `2025-09-08 ...xlsx` | 2025-09-01 |
+| `2025-11-08 ...xlsx` | 2025-11-01 |
+| `2026-01-08 ...xlsx` | 2026-01-01 |
 
-Nothing needs to be changed in the script — the window updates automatically each month.
+The script no longer enforces a 6-month "intended window" — there is no silent filter. To change the window, change what is in the folder.
 
 ---
 
@@ -194,7 +200,7 @@ Claude Code will read the scripts, update the necessary variables, run the steps
 |---|---|---|
 | `FileNotFoundError: No xlsx files found in Domain Full Data` | Domain files missing or wrong folder | Place domain xlsx files in `Domain Full Data/` |
 | `domain.parquet not found` | `compile_domain.py` was never run | Run `python compile_domain.py` first |
-| `No fulfillment files found in window` | Fulfillment files are outside the current 6-month window | Add the correct month files to `Fulfillments/` |
+| `No fulfillment files found in <Fulfillments path>` | Folder is empty | Add the month files you want analyzed to `Fulfillments/` |
 | `No deals/leads file found` | No xlsx with "deals" or "leads" in name in `Documents/` | Rename or move the file into `Documents/` |
 | DEFAULT RISK shows 0 (with warning) | Domain export is missing the `DEFAULT RISK` column | Normal — script handles this gracefully; no action needed |
 | Output filename has wrong month | Script ran on a different date | The filename reflects the month the script was run |
@@ -210,8 +216,6 @@ Claude Code will read the scripts, update the necessary variables, run the steps
 | `build_reports.py` | Legacy — Column C only; not used for main output |
 | `build_population.py` | Legacy — fulfillment audit file; not used for main output |
 | `build_deals_leads.py` | Legacy — Columns F and G only; not used for main output |
-| `domain_check.py` | Diagnostic — inspect domain column structure |
-| `market_deals_check.py` | Diagnostic — match market deals to domain/fulfillment |
-| `Fulfillment_Compilation.xlsx` | Audit file written each run (all fulfillment rows combined) |
+| `Fulfillment_Compilation.xlsx` | Audit file written each run — all fulfillment rows combined, plus `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL` columns for validating D/F/G/E |
 | `{CLIENT} - Distress Report - YYYY-MM.xlsx` | **Report output** |
 | `Domain Full Data/domain.parquet` | Cached domain — rebuilt by `compile_domain.py` |

@@ -1,11 +1,18 @@
 # Generated audit file — too large for GitHub
 Fulfillment_Compilation.xlsx
 
-# Large source data files (>10MB) — not tracked in git
+# Per-client data files — vary every run, never tracked
 Fulfillments/*.xlsx
 Domain Full Data/*.xlsx
 Domain Full Data/*.parquet
 Market Deals/*.xlsx
+Documents/*.xlsx
+
+# Dynamic report output — filename includes client name + month
+* - Distress Report - *.xlsx
+
+# Claude Code internal state
+.claude/
 
 # Temp log files
 *.log

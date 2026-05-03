@@ -30,5 +30,11 @@ for i, path in enumerate(xlsx_files, 1):
 dom = pd.concat(parts, ignore_index=True)
 print(f"Combined: {len(dom):,} rows, {dom['FOLIO'].nunique():,} unique FOLIOs")
 
+# Coerce mixed-type object columns to string so pyarrow can serialize them.
+# Common offenders: ZIP codes that arrive as a mix of "12345" and 12345.0 / NaN.
+obj_cols = dom.select_dtypes(include='object').columns
+for c in obj_cols:
+    dom[c] = dom[c].where(dom[c].notna(), None).astype('string')
+
 dom.to_parquet(OUT, index=False)
 print(f"\nSaved: {OUT}")
