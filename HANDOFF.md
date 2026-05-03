@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-04-09
+**Last updated:** 2026-05-03 — fixed domain duplicate-FOLIO inflation in Columns B / D / E (deduped after load, keep most recent LAST SALE DATE)
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -9,41 +9,40 @@ Working directory: `E:\Claude projects\Test project\Distress Report`
 
 ## Fulfillment Window Policy
 
-**Standard fulfillment window is 6 months ending 3 months before the analysis date.** If 6 months of files are not available, fall back to 3 months. If fewer than 3 are available, use whatever is there. The window is not arbitrary — it accounts for three compounding factors:
+**The fulfillment window is defined entirely by the .xlsx files present in `Fulfillments/`.** The user controls the window by adding or removing files. There is no hidden 6-month filter — whatever is in the folder is the window.
 
-1. **County data validation lag** — County records take time to reflect recent sales, liens, and ownership changes. Pulling data too close to the report date introduces unreliable signals.
-2. **Client marketing cycles** — Clients need time to work leads generated from a fulfillment. The window captures a realistic marketing period.
-3. **Disposition timelines** — Deals take time to close. The window ensures dispositions from active leads are visible in the data.
+- `WINDOW_START` = first day of the earliest fulfillment file's month (parsed from the `YYYY-MM` filename prefix)
+- `WINDOW_END`   = first day of the latest fulfillment file's month
+- `SOLD_SINCE`   = `WINDOW_START` — the Column D "sold since" cutoff
 
-**How to select months:**
-- Most recent fulfillment month = Analysis month − 3
-- Then include the 5 months before that (6 total)
-- If fewer than 6 months of files are available, fall back to 3 months; if fewer than 3, use whatever is there
+**Examples:**
+- Earliest file is `2025-11-08 ...xlsx` → `SOLD_SINCE` = 2025-11-01
+- Earliest file is `2025-09-08 ...xlsx` → `SOLD_SINCE` = 2025-09-01
 
-**The window is fully dynamic** — computed at runtime from today's date. Nothing is hardcoded.
+**Why a folder-driven window:**
+1. **County data validation lag** — county records take time to reflect recent sales, liens, ownership changes; the user excludes too-recent months by not putting them in the folder.
+2. **Client marketing cycles** — clients need time to work leads from a fulfillment.
+3. **Disposition timelines** — deals take time to close; the window captures active-lead outcomes.
+4. **No surprises** — earlier versions enforced a 6-month "intended window" that silently dropped files outside it. The folder is now the single source of truth.
 
-| Analysis Month | Most Recent Month | 6-Month Window |
-|---|---|---|
-| April 2026 | January 2026 | Aug 2025 – Jan 2026 |
-| May 2026 | February 2026 | Sep 2025 – Feb 2026 |
-| June 2026 | March 2026 | Oct 2025 – Mar 2026 |
-
-**Column D sold cutoff** = first day of the window start month (also dynamic).
-
-**Current window:** Aug 2025 – Jan 2026 (report run: April 2026)
+**Current window:** 2025-11 – 2026-01 (3 files in folder)
 
 ---
 
 ## What Has Been Built
 
 ### Step 1 — Fulfillment Compilation
-**Script:** `build_domain_report.py` (inline, STEP 1)
+**Script:** `build_domain_report.py` (inline, STEP 1; final write at end of STEP 5)
 **Output:** `Fulfillment_Compilation.xlsx`
-All 6 fulfillment files compiled into one dataset (668,000 rows, 233,266 unique properties).
+All fulfillment files in `Fulfillments/` compiled into one dataset.
 - Source folder: `Fulfillments/`
 - Added columns: `Month`, `Marketing_Channel`, `Source_File`
 - Property identifier: `FOLIO`
-- Channel: DM only (all 6 files are Direct Mail)
+- **Validation columns appended at end of STEP 5** (used to spot-check the report):
+  - `LAST SALE DATE` — most recent sale per FOLIO from domain → validates Column D
+  - `PROPERTY STATUS` — `Lead` / `Deal` from deals/leads file (Deal wins if both) → validates F/G
+  - `MARKET DEAL` — `Yes`/`No` flag from market-deals overlap → validates Column E
+- The save is wrapped with `engine_kwargs={'options': {'strings_to_urls': False, 'tmpdir': str(BASE)}}` because (a) fulfillment data has >65,530 property URLs (Excel's per-sheet hyperlink limit) and (b) the dev machine's `C:` drive is often full, so xlsxwriter's temp files must go on the project drive.
 
 ---
 
@@ -193,6 +192,17 @@ All data columns populated:
 **Location:** `build_domain_report.py` → `write_excel()`, header_comments block
 **Fix:** Comments now explicitly sized at 400×200px so full text is visible on hover.
 
+### Fix 6 — Compilation validation columns + write robustness
+**Location:** `build_domain_report.py` — STEP 5b (after market deals)
+**Fix:** Compilation save moved from STEP 1 to STEP 5b so it can be enriched with `LAST SALE DATE`, `PROPERTY STATUS`, and `MARKET DEAL` for audit. xlsxwriter is configured with `strings_to_urls=False` (avoids Excel's 65,530 URL/sheet cap and the resulting memory blowup) and `tmpdir=BASE` (keeps spill files off the system C: drive).
+
+### Fix 7 — Domain duplicate FOLIO inflation (Columns B / D / E)
+**Location:** `build_domain_report.py` — right after domain load and date coercion (STEP 3)
+**Symptom:** Manual filter on `Fulfillment_Compilation.xlsx` (e.g. SCORE 801–1000, LAST SALE DATE >= 2025-11-01) returned 527 unique rows; the report's Column D / 1000-801 bucket showed 561. The 34-row gap was domain rows with duplicate FOLIOs being counted multiple times.
+**Root cause:** Columns B, D, and E count rows from the domain DataFrame directly. The domain had 166,782 duplicate FOLIO rows (2,345,875 total → 2,179,093 unique), so any FOLIO appearing N times was counted N times.
+**Fix:** Deduplicate `dom` by FOLIO immediately after the date / numeric coercions, sorting by `LAST SALE DATE` ascending with `na_position='first'` and keeping the last row — newer sale info wins, NaT dates are dropped when a real date exists.
+**Verified:** Column D / 1000-801 bucket now reads 527, exact match to the manual audit.
+
 ---
 
 ## Open / Decided Issues
@@ -211,6 +221,7 @@ All data columns populated:
 | Dead Leads counted as Leads | ✅ Implemented | PROPERTY STATUS == 'Dead Lead' → reclassified as Lead |
 | Contracts counted as Leads | ✅ Implemented | PROPERTY STATUS == 'Contract' → reclassified as Lead |
 | Blank lead/appointment dates | ✅ Implemented | Lead-type statuses with no date are included |
+| Domain duplicate FOLIOs inflating B/D/E | ✅ Fixed | Dedupe after load, keep row with most recent LAST SALE DATE |
 
 ---
 
@@ -223,9 +234,7 @@ All data columns populated:
 | `build_reports.py` | Older — generates Column C only (Max and Average); not used for main output |
 | `build_population.py` | Older — compiles fulfillment + generates audit file; not used for main output |
 | `build_deals_leads.py` | Older — generates Columns F and G only; not used for main output |
-| `domain_check.py` | Diagnostic: inspects domain columns/structure |
-| `market_deals_check.py/.2/.3/.4` | Diagnostics: match market deals to domain/fulfillment |
-| `Fulfillment_Compilation.xlsx` | Compiled fulfillment dataset (written each run for audit) |
+| `Fulfillment_Compilation.xlsx` | Compiled fulfillment dataset, written each run; includes `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL` validation columns |
 | `{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx` | **LATEST REPORT OUTPUT** — e.g. `SBD - Distress Report - 2026-04.xlsx` |
 | `Population_For_Calculation.xlsx` | Older audit file |
 | `Documents/Deals and Leads SBD.xlsx` | **ACTIVE** — leads, deals, appointments for SBD (auto-discovered) |

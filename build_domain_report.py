@@ -3,7 +3,7 @@ build_domain_report.py
 ─────────────────────────────────────────────────────────────────────────────
 Generates Expected_Result_Max_BCDFG_InFulfillment.xlsx with:
   Column B — Total Properties        (all domain properties with BUYBOX SCORE > 0)
-  Column C — Properties in the fulfillment (MAX logic, 6-month window)
+  Column C — Properties in the fulfillment (MAX logic across the actual fulfillment window)
   Column D — Sold since start of fulfillment window (pre-sale scores from fulfillment)
   Column E — Market Deals            (overlap: market deals ∩ fulfillment-sold)
   Column F — Clients Lead            (fulfillment-matched leads/appointments/dead leads/contracts)
@@ -13,7 +13,9 @@ Generates Expected_Result_Max_BCDFG_InFulfillment.xlsx with:
   Column J — Client Deals Conc.               =G/C  (formula)
   Column K — Client Leads Conc.               =F/C  (formula)
 
-Dynamic window: 6 months ending 3 months before today. Uses all available files if fewer than 6.
+Window: defined entirely by the .xlsx files present in Fulfillments/. SOLD_SINCE / WINDOW_START
+is the first day of the earliest fulfillment month; WINDOW_END is the first day of the latest.
+The user controls the window by adding or removing files from the folder.
 Deals/Leads: any .xlsx in Documents/ whose name contains "leads" or "deals" (case-insensitive).
 """
 
@@ -31,28 +33,21 @@ FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "SBD Market Deals.xlsx"
-CLIENT_NAME       = "SBD"
+MARKET_PATH       = BASE / "Market Deals" / "Rapid Fire HB Market Deals.xlsx"
+CLIENT_NAME       = "Rapid Fire HB"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# SBD started doing business with 8020REI on 2023-09-26
-CLIENT_START_DATE = pd.to_datetime("2023-09-26")
+# Rapid Fire HB started doing business with 8020REI on 2021-11-23
+CLIENT_START_DATE = pd.to_datetime("2021-11-23")
 print(f"Filtering leads/deals to on or after: {CLIENT_START_DATE.date()}")
 
-# ── Analysis window — 6 months, derived dynamically from today's date ─────────
-# Standard: 6-month window ending 3 months before the analysis month.
-# Most recent month  = analysis_month − 3
-# Oldest month       = most_recent − 5  (6 months total)
-# If fewer than 6 fulfillment files are available, use whatever is there.
-_today         = pd.Timestamp.today().normalize()
-_analysis_month = _today.replace(day=1)
-WINDOW_END     = (_analysis_month - pd.DateOffset(months=3)).replace(day=1)
-WINDOW_START   = (WINDOW_END      - pd.DateOffset(months=5)).replace(day=1)
-SOLD_SINCE     = WINDOW_START   # Column D cutoff — sold on or after the start of the window
-print(f"Analysis month: {_analysis_month.strftime('%Y-%m')} | "
-      f"Fulfillment window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')}")
+# ── Analysis window ──────────────────────────────────────────────────────────
+# The window is defined entirely by the files present in Fulfillments/.
+# WINDOW_START / WINDOW_END / SOLD_SINCE are derived from the earliest and
+# latest fulfillment-file months in STEP 1 below. The user controls the
+# window by adding or removing files from the folder.
 
 # ── Bucket definitions ────────────────────────────────────────────────────────
 likely_bins   = [-0.5, 20, 40, 60, 80, 100.5]
@@ -160,22 +155,21 @@ def domain_distress_counts(df_sub):
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1: Compile fulfillment files → MAX aggregations per FOLIO
-# Reads all xlsx files from Fulfillments/ folder — no pre-built file needed
+# Window = whatever .xlsx files are in Fulfillments/. The user controls the
+# window by adding or removing files. SOLD_SINCE = first day of the earliest
+# file's month.
 # ══════════════════════════════════════════════════════════════════════════════
 print("Compiling fulfillment files...")
-_all_ff = sorted(f for f in FULFILLMENTS_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
-_ff_files = [
-    f for f in _all_ff
-    if WINDOW_START <= pd.Timestamp(f.name[:7]) <= WINDOW_END
-]
+_ff_files = sorted(f for f in FULFILLMENTS_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
 if not _ff_files:
-    raise FileNotFoundError(
-        f"No fulfillment files found for window "
-        f"{WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
-        f"in {FULFILLMENTS_DIR}"
-    )
+    raise FileNotFoundError(f"No fulfillment files found in {FULFILLMENTS_DIR}")
+
+_ff_months   = sorted({f.name[:7] for f in _ff_files})
+WINDOW_START = pd.Timestamp(_ff_months[0])
+WINDOW_END   = pd.Timestamp(_ff_months[-1])
+SOLD_SINCE   = WINDOW_START   # Column D cutoff — first day of the earliest fulfillment month
 print(f"  Window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
-      f"({len(_ff_files)} of {len(_all_ff)} file(s) in folder)")
+      f"({len(_ff_months)} month(s), {len(_ff_files)} file(s))")
 
 _parts = []
 for _f in _ff_files:
@@ -188,10 +182,8 @@ for _f in _ff_files:
 
 df = pd.concat(_parts, ignore_index=True)
 print(f"  Total: {len(df):,} rows, {df['FOLIO'].nunique():,} unique FOLIOs")
-
-print("  Saving Fulfillment_Compilation.xlsx for audit...")
-df.to_excel(COMPILED_PATH, index=False)
-print(f"  Saved.")
+# Compilation file is written at the end of STEP 5, after enrichment with
+# LAST SALE DATE, PROPERTY STATUS, and MARKET DEAL flag for validation.
 
 df['LIKELY DEAL SCORE']   = pd.to_numeric(df['LIKELY DEAL SCORE'],   errors='coerce')
 df['SCORE']               = pd.to_numeric(df['SCORE'],               errors='coerce')
@@ -364,7 +356,12 @@ print("\nLoading domain files...")
 _parquet = DOMAIN_DIR / "domain.parquet"
 import os as _os
 if _os.path.exists(_parquet):
-    dom = pd.read_parquet(_parquet)
+    # Strip pandas metadata before to_pandas() so StringDtype columns load as
+    # plain object — pandas StringDtype reconstruction balloons memory on this dataset.
+    import pyarrow.parquet as _pq
+    _table = _pq.read_table(_parquet).replace_schema_metadata(None)
+    dom = _table.to_pandas()
+    del _table
     print(f"  Loaded from parquet: {len(dom):,} rows")
 else:
     print("  Parquet not found — reading xlsx and converting (first run is slower)...")
@@ -384,6 +381,15 @@ dom['total_mkt']           = dom[['MARKETING DM COUNT', 'MARKETING SMS COUNT']].
 dom['ACTION_DAYS']         = dom['ACTION PLANS'].apply(extract_days)
 dom['LAST SALE DATE']      = pd.to_datetime(dom['LAST SALE DATE'], errors='coerce')
 dom['buybox_int']          = pd.to_numeric(dom['PROPERTY ID (BUYBOX)'], errors='coerce')
+
+# Dedupe by FOLIO — domain has ~167K duplicate FOLIO rows that would otherwise
+# inflate Column B / D / E counts. Keep the row with the most recent LAST SALE DATE
+# so newer sale info wins; NaT dates sort first so they're dropped when a real date exists.
+_pre_dedupe = len(dom)
+dom = (dom.sort_values('LAST SALE DATE', na_position='first')
+          .drop_duplicates('FOLIO', keep='last')
+          .reset_index(drop=True))
+print(f"  After dedupe by FOLIO: {len(dom):,} rows ({_pre_dedupe - len(dom):,} dropped)")
 
 # ── Owner Occupied cross-reference for Columns C / F / G ─────────────────────
 # Fulfillment distress data has no Owner Occupied signal; derive it from
@@ -450,15 +456,50 @@ print(f"  Column D ready — total: {sum(D_likely.values()):,}")
 # ══════════════════════════════════════════════════════════════════════════════
 print("\nComputing Column E (market deals x fulfillment)...")
 md = pd.read_excel(MARKET_PATH)
-md_ids = set(md['PropertyID'].dropna().astype(int).unique())
 
-# Overlap: market deal BUYBOX IDs within the fulfillment-sold subset
-ff_sold_buybox_ids = set(sold['buybox_int'].dropna().astype(int).unique())
-overlap_ids = md_ids & ff_sold_buybox_ids
-print(f"  Market deals unique: {len(md_ids):,} | Fulfillment-sold: {len(ff_sold_buybox_ids):,} | Overlap: {len(overlap_ids):,}")
+if 'PropertyID' in md.columns:
+    md_ids = set(md['PropertyID'].dropna().astype(int).unique())
+    ff_sold_buybox_ids = set(sold['buybox_int'].dropna().astype(int).unique())
+    overlap_ids = md_ids & ff_sold_buybox_ids
+    print(f"  Match by PropertyID. Market deals: {len(md_ids):,} | Fulfillment-sold: {len(ff_sold_buybox_ids):,} | Overlap: {len(overlap_ids):,}")
+    mkt_sold = sold[sold['buybox_int'].isin(overlap_ids)].copy()
+else:
+    # Fallback: market deals file has no PropertyID — match on normalized ADDRESS + ZIP.
+    _SUFFIX_MAP = {
+        r'\bSTREET\b': 'ST',  r'\bAVENUE\b': 'AVE', r'\bROAD\b': 'RD',
+        r'\bBOULEVARD\b': 'BLVD', r'\bDRIVE\b': 'DR', r'\bLANE\b': 'LN',
+        r'\bCOURT\b': 'CT', r'\bCIRCLE\b': 'CIR', r'\bTRAIL\b': 'TRL',
+        r'\bPLACE\b': 'PL', r'\bPARKWAY\b': 'PKWY', r'\bHIGHWAY\b': 'HWY',
+        r'\bTERRACE\b': 'TER',
+    }
+    def _norm_addr(s):
+        if pd.isna(s): return None
+        s = re.sub(r'[.,#]', '', str(s).upper().strip())
+        for pat, rep in _SUFFIX_MAP.items():
+            s = re.sub(pat, rep, s)
+        return re.sub(r'\s+', ' ', s) or None
+    def _norm_zip(z):
+        if pd.isna(z): return None
+        s = re.sub(r'\D', '', str(z))[:5]
+        return s if len(s) == 5 else None
+    def _key(a, z):
+        na, nz = _norm_addr(a), _norm_zip(z)
+        return f"{na}|{nz}" if na and nz else None
 
-# Filter fulfillment-sold to market deal properties
-mkt_sold = sold[sold['buybox_int'].isin(overlap_ids)].copy()
+    md_cols = {c.lower(): c for c in md.columns}
+    addr_col = md_cols.get('street address') or md_cols.get('address')
+    zip_col  = md_cols.get('zip code')       or md_cols.get('zip')
+    if not addr_col or not zip_col:
+        raise KeyError(f"Market deals missing PropertyID and address/zip. Got: {list(md.columns)}")
+
+    md['_addr_key']   = [_key(a, z) for a, z in zip(md[addr_col], md[zip_col])]
+    sold['_addr_key'] = [_key(a, z) for a, z in zip(sold['ADDRESS'], sold['ZIP'])]
+    md_keys     = set(md['_addr_key'].dropna().unique())
+    sold_keys   = set(sold['_addr_key'].dropna().unique())
+    overlap_keys = md_keys & sold_keys
+    print(f"  Match by ADDRESS+ZIP (no PropertyID in market deals). "
+          f"Market deals keys: {len(md_keys):,} | Fulfillment-sold keys: {len(sold_keys):,} | Overlap: {len(overlap_keys):,}")
+    mkt_sold = sold[sold['_addr_key'].isin(overlap_keys)].copy()
 
 E_likely = count_by_bin(mkt_sold['d_likely'], likely_bins, likely_labels)
 E_score  = count_by_bin(mkt_sold['d_score'],  score_bins,  score_labels)
@@ -470,6 +511,51 @@ print(f"  Column E ready — total: {sum(E_likely.values()):,}")
 print(f"\n=== COLUMN E (market deals) ===")
 print("Likely Deal Score:", E_likely)
 print("Action Plan:", E_action)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 5b: Enrich fulfillment compilation for validation, then save
+# Adds 3 columns the user can use to spot-check D, F/G, and E:
+#   • LAST SALE DATE   — most recent sale per FOLIO from domain (validates D)
+#   • PROPERTY STATUS  — Lead/Deal from deals/leads file (validates F/G)
+#   • MARKET DEAL      — Yes/No flag from market deals overlap (validates E)
+# ══════════════════════════════════════════════════════════════════════════════
+print("\nEnriching fulfillment compilation with validation columns...")
+
+_last_sale = (dom[['FOLIO', 'LAST SALE DATE']]
+              .assign(FOLIO=dom['FOLIO'].astype(str).str.strip())
+              .dropna(subset=['LAST SALE DATE'])
+              .sort_values('LAST SALE DATE')
+              .drop_duplicates('FOLIO', keep='last')
+              .set_index('FOLIO')['LAST SALE DATE'])
+
+# Prefer Deal over Lead when a FOLIO appears as both
+_status_priority = {'Deal': 2, 'Lead': 1}
+_dl_status = (dl[['FOLIO_key', 'PROPERTY STATUS']]
+              .dropna(subset=['FOLIO_key'])
+              .assign(_p=lambda x: x['PROPERTY STATUS'].map(_status_priority).fillna(0))
+              .sort_values('_p')
+              .drop_duplicates('FOLIO_key', keep='last')
+              .set_index('FOLIO_key')['PROPERTY STATUS'])
+
+_mkt_folios = set(mkt_sold['FOLIO'].astype(str).str.strip().unique())
+
+_df_folio_key = df['FOLIO'].astype(str).str.strip()
+df['LAST SALE DATE']  = _df_folio_key.map(_last_sale)
+df['PROPERTY STATUS'] = _df_folio_key.map(_dl_status).fillna('')
+df['MARKET DEAL']     = np.where(_df_folio_key.isin(_mkt_folios), 'Yes', 'No')
+
+print(f"  Saving Fulfillment_Compilation.xlsx with validation columns...")
+# strings_to_urls=False  — disables xlsxwriter's URL auto-detection
+#   (fulfillment data contains >65,530 property URLs, exceeding Excel's per-sheet
+#   limit and causing a warning flood + memory blowup).
+# tmpdir=BASE  — keeps xlsxwriter's intermediate files on the project drive;
+#   the system %TEMP% is on C: which can be full on this machine.
+with pd.ExcelWriter(COMPILED_PATH, engine='xlsxwriter',
+                    engine_kwargs={'options': {'strings_to_urls': False,
+                                                'tmpdir': str(BASE)}}) as _writer:
+    df.to_excel(_writer, index=False)
+print(f"  Saved: {COMPILED_PATH.name}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
