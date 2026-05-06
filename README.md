@@ -140,7 +140,7 @@ A side audit file is also written each run: `Fulfillment_Compilation.xlsx`. The 
 | J | Client Deals Concentration — formula =G/C |
 | K | Client Leads Concentration — formula =F/C |
 
-Each column includes sub-rows for distress breakdowns (Distress #1–4, Vacant, Default Risk, Owner Occupied) and score/action plan distribution.
+Each column includes sub-rows for distress breakdowns (Pre-foreclosure, Vacant, Taxes, Estate, Probate, Liens, High Equity, 55+, Default Risk, Absentee, Owner Occupied, …) and score/action plan distribution. Binary distresses for fulfillment-related columns (C/D/E/F/G) are read directly from the fulfillment file's per-month flag columns (e.g. `PRE-FORECLOSURE > 0`); MAIN DISTRESS #1–4 ranking is no longer used.
 
 ---
 

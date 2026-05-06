@@ -153,6 +153,32 @@ def domain_distress_counts(df_sub):
     return result
 
 
+def fulfillment_distress_counts(df_sub, dist_long_lookup):
+    """Distress counts using fulfillment binary flags as source of truth.
+
+    The fulfillment file's binary distress columns (PRE-FORECLOSURE > 0,
+    TAXES > 0, ESTATE > 0, …) are authoritative for any column compared
+    against fulfillment (C/D/E/F/G). Domain often has fewer binary flags
+    set per FOLIO, so reading from domain there undercounts.
+
+    ABSENTEE / Owner Occupied stay domain-derived (3-way classification,
+    fulfillment doesn't expose it the same way).
+    """
+    folios_set = set(df_sub['FOLIO'].dropna().astype(str).str.strip().unique())
+    result = {dtype: 0 for dtype in distress_order}
+    if folios_set:
+        _key = dist_long_lookup['FOLIO'].astype(str).str.strip()
+        _sub = dist_long_lookup[_key.isin(folios_set)]
+        for dtype in distress_order:
+            result[dtype] = int(_sub[_sub['dtype'] == dtype]['FOLIO'].nunique())
+    if 'ABSENTEE' in df_sub.columns:
+        abs_vals = pd.to_numeric(df_sub['ABSENTEE'], errors='coerce')
+        result['Absentee']              = int((abs_vals == 1).sum())
+        result['Absentee Out of State'] = int((abs_vals == 2).sum())
+        result['Owner Occupied']        = int((abs_vals == 0).sum())
+    return result
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 1: Compile fulfillment files → MAX aggregations per FOLIO
 # Window = whatever .xlsx files are in Fulfillments/. The user controls the
@@ -205,18 +231,19 @@ ff_agg = df.groupby('FOLIO').agg(
     ff_days   = ('ACTION_DAYS',       'min'),
 ).join(ff_mkt, how='left')
 
-distress_main_cols = ['MAIN DISTRESS #1', 'MAIN DISTRESS #2', 'MAIN DISTRESS #3', 'MAIN DISTRESS #4']
-no_dist_re = re.compile(r'^No distress', re.IGNORECASE)
-dist_long = (
-    df[['FOLIO'] + distress_main_cols]
-    .melt(id_vars='FOLIO', value_vars=distress_main_cols, value_name='dtype')
-    .dropna(subset=['dtype'])
-)
-dist_long = dist_long[~dist_long['dtype'].str.match(no_dist_re, na=True)].copy()
-dist_long['dtype'] = dist_long['dtype'].str.strip()
-vac_num  = pd.to_numeric(df['VACANT'], errors='coerce').fillna(0)
-vac_rows = pd.DataFrame({'FOLIO': df[vac_num > 0]['FOLIO'].unique(), 'dtype': 'Vacant'})
-dist_long = pd.concat([dist_long, vac_rows], ignore_index=True)
+# Source of truth for binary distress flags = fulfillment binary columns
+# (PRE-FORECLOSURE > 0, VACANT > 0, TAXES > 0, …) per FOLIO across all months.
+# Replaces the old MAIN DISTRESS #1-4 ranking, which silently dropped flags
+# that didn't make the top-4 ranked slot for a given property.
+ff_binary_cols = [c for c in DOMAIN_DIST_MAP.keys() if c in df.columns]
+_long_parts = []
+for _col in ff_binary_cols:
+    _vals = pd.to_numeric(df[_col], errors='coerce').fillna(0)
+    _flagged = df.loc[_vals > 0, 'FOLIO'].dropna().unique()
+    if len(_flagged):
+        _long_parts.append(pd.DataFrame({'FOLIO': _flagged, 'dtype': DOMAIN_DIST_MAP[_col]}))
+dist_long = (pd.concat(_long_parts, ignore_index=True)
+             if _long_parts else pd.DataFrame(columns=['FOLIO', 'dtype']))
 # Inject Default Risk for fulfillment FOLIOs that appear in the DR file
 ff_folios_set  = set(df['FOLIO'].dropna().astype(str).str.strip().unique())
 dr_in_ff_folios = ff_folios_set & dr_folios
@@ -444,7 +471,7 @@ D_likely = count_by_bin(sold['d_likely'], likely_bins, likely_labels)
 D_score  = count_by_bin(sold['d_score'],  score_bins,  score_labels)
 D_action = count_by_action(sold['d_days'], action_map)
 D_mkt    = count_by_bin(sold['d_mkt'], mkt_bins, mkt_labels)
-D_dist   = domain_distress_counts(sold)
+D_dist   = fulfillment_distress_counts(sold, dist_long)
 print(f"  Column D ready — total: {sum(D_likely.values()):,}")
 
 
@@ -505,7 +532,7 @@ E_likely = count_by_bin(mkt_sold['d_likely'], likely_bins, likely_labels)
 E_score  = count_by_bin(mkt_sold['d_score'],  score_bins,  score_labels)
 E_action = count_by_action(mkt_sold['d_days'], action_map)
 E_mkt    = count_by_bin(mkt_sold['d_mkt'], mkt_bins, mkt_labels)
-E_dist   = domain_distress_counts(mkt_sold)
+E_dist   = fulfillment_distress_counts(mkt_sold, dist_long)
 print(f"  Column E ready — total: {sum(E_likely.values()):,}")
 
 print(f"\n=== COLUMN E (market deals) ===")
@@ -679,8 +706,9 @@ def write_excel(path, rows, sheet_title):
             "Action Plan: best (lowest day count) across all months.\n"
             "Mkt Count: max(total DM contacts, total SMS contacts) — strongest channel only; "
             "properties with 0 contacts are treated as 1 (recommended at least once).\n"
-            "Distress: MAIN DISTRESS #1–4 + binary VACANT + Default Risk cross-referenced "
-            "from domain by FOLIO.\n"
+            "Distress: fulfillment binary distress columns (PRE-FORECLOSURE > 0, "
+            "VACANT > 0, TAXES > 0, …) per FOLIO across all months + Default Risk "
+            "cross-referenced from domain.\n"
             "Owner Occupied: cross-referenced from domain ABSENTEE column."
         ),
         'D': (
@@ -689,7 +717,8 @@ def write_excel(path, rows, sheet_title):
             f"Cutoff = start of the {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} fulfillment window.\n"
             f"Only fulfillment-matched properties are included (domain-only sold properties excluded).\n"
             f"Scores are pre-sale fulfillment MAX values (snapshot before the sale).\n"
-            f"Distress derived from domain binary columns on the sold subset."
+            f"Distress: fulfillment binary distress columns per FOLIO (same source as C); "
+            f"ABSENTEE / Owner Occupied stay domain-derived."
         ),
         'E': (
             "Market Deals\n"
@@ -699,7 +728,8 @@ def write_excel(path, rows, sheet_title):
             "Source: properties that appear in both the Market Deals file and the fulfillment-sold subset.\n"
             "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX).\n"
             "Scores: pre-sale fulfillment MAX values (same as Column D).\n"
-            "Distress derived from domain binary columns on this overlap subset."
+            "Distress: fulfillment binary distress columns per FOLIO (same source as C/D); "
+            "ABSENTEE / Owner Occupied stay domain-derived."
         ),
         'F': (
             "Clients Lead\n"

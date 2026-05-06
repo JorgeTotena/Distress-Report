@@ -54,7 +54,7 @@ All fulfillment files in `Fulfillments/` compiled into one dataset.
 - Total Score → max across months → range bucket
 - Action Plan → min days (30 < 60 < 90 = best)
 - Marketing Count → max(total DM across all months, total SMS across all months); 0 contacts treated as 1
-- Distress → MAIN DISTRESS #1–4 + binary VACANT + Default Risk cross-referenced from domain by FOLIO
+- Distress → fulfillment binary distress columns per FOLIO (PRE-FORECLOSURE > 0, VACANT > 0, TAXES > 0, …) + Default Risk cross-referenced from domain by FOLIO
 
 ---
 
@@ -116,16 +116,20 @@ All data columns populated:
 
 ## Distress Logic — How Each Column Gets It
 
+**Source of truth for binary distresses (Pre-foreclosure, Vacant, Taxes, Estate, Inter family transfer, Probate, Judgement, Liens, High Equity, 55+, Downsizing) for fulfillment-related columns = the fulfillment file's binary columns directly** (e.g. `PRE-FORECLOSURE > 0` in any month → flagged). Default Risk comes from the domain DR cross-ref. ABSENTEE / Owner Occupied stay domain-derived (3-way classification).
+
 | Column | Method |
 |---|---|
 | B (Total Properties) | `domain_distress_counts()` — reads binary columns from domain; ABSENTEE: 1=in-state, 2=out-of-state, 0=owner occupied |
-| C (Fulfillment) | `dist_long` from MAIN DISTRESS #1–4 + binary VACANT + Default Risk (FOLIO cross-ref) |
-| D (Sold) | `domain_distress_counts()` on sold subset of domain |
-| E (Market Deals) | `domain_distress_counts()` on market-deal-overlap subset |
-| F (Client Leads) | `ff_distress_map` — same as Column C (fulfillment distress only) |
+| C (Fulfillment) | `dist_long` built from fulfillment binary columns + Default Risk (FOLIO cross-ref) |
+| D (Sold) | `fulfillment_distress_counts(sold, dist_long)` — same source as C, restricted to sold ∩ fulfillment FOLIOs |
+| E (Market Deals) | `fulfillment_distress_counts(mkt_sold, dist_long)` — same source as C, restricted to market-deal-overlap |
+| F (Client Leads) | `ff_distress_map` — same source as C (fulfillment binary columns) |
 | G (Client Deals) | Same as F |
 
 **Owner Occupied for C/F/G:** Derived by joining fulfillment/leads/deals FOLIOs against domain ABSENTEE column (ABSENTEE == 0).
+
+**Why fulfillment binary, not MAIN DISTRESS #1-4 ranking:** the ranking only carries the top 4 distresses per property. Pre-foreclosure (and similarly-mid-ranked flags) routinely fell off when properties had >4 signals, undercounting by 70x in some buckets. Reading the binary columns picks up every flagged FOLIO. See "Fix 8" below.
 
 ---
 
@@ -203,6 +207,19 @@ All data columns populated:
 **Fix:** Deduplicate `dom` by FOLIO immediately after the date / numeric coercions, sorting by `LAST SALE DATE` ascending with `na_position='first'` and keeping the last row — newer sale info wins, NaT dates are dropped when a real date exists.
 **Verified:** Column D / 1000-801 bucket now reads 527, exact match to the manual audit.
 
+### Fix 8 — Distress source = fulfillment binary columns (Columns C / D / E / F / G)
+**Location:** `build_domain_report.py` — STEP 1 `dist_long` build, plus D/E call sites
+**Symptom:** Manual filter on `Fulfillment_Compilation.xlsx` for `PRE-FORECLOSURE > 0` AND `LAST SALE DATE >= 2025-11-01` returned 350 rows. Column D / Pre-foreclosure showed **5**. Same kind of undercount across other binary distresses for any column compared against fulfillment.
+**Root cause (two-fold):**
+- Columns C / F / G derived distress from `MAIN DISTRESS #1–4` (a top-4 ranking, not a flag list). Properties with >4 signals routinely had Pre-foreclosure ranked off, dropping the count.
+- Columns D / E read binary distress from the **domain** file (`domain_distress_counts(sold)`), but the domain has fewer flags set than the fulfillment file for the same FOLIOs.
+**Fix:**
+- `dist_long` is now built from the fulfillment binary columns directly: for each `col` in `DOMAIN_DIST_MAP`, take FOLIOs where `pd.to_numeric(df[col]) > 0` in any month and tag them with the corresponding label. Default Risk still injected from the domain DR cross-ref. ABSENTEE / Owner Occupied still domain-derived.
+- New helper `fulfillment_distress_counts(df_sub, dist_long)` counts distress for any subset of FOLIOs against `dist_long`. Used by Columns D and E in place of `domain_distress_counts()`.
+- Columns F / G inherit the change automatically (they read `ff_distress_map` which is derived from `dist_long`).
+- Column B is intentionally untouched — its rows are mostly *not* in fulfillment, so `domain_distress_counts(dom_b)` is the only viable source.
+**Verified:** Pre-foreclosure now reads C=4,487 / D=350 / E=20 / F=18 / G=1, matching manual audits on the fulfillment file.
+
 ---
 
 ## Open / Decided Issues
@@ -222,6 +239,7 @@ All data columns populated:
 | Contracts counted as Leads | ✅ Implemented | PROPERTY STATUS == 'Contract' → reclassified as Lead |
 | Blank lead/appointment dates | ✅ Implemented | Lead-type statuses with no date are included |
 | Domain duplicate FOLIOs inflating B/D/E | ✅ Fixed | Dedupe after load, keep row with most recent LAST SALE DATE |
+| Pre-foreclosure (and other binary distresses) undercounted in C/D/E/F/G | ✅ Fixed | Read binary distress from fulfillment, not MAIN DISTRESS #1-4 ranking nor domain |
 
 ---
 
