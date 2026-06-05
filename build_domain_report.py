@@ -33,15 +33,15 @@ FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Rapid Fire HB Market Deals.xlsx"
-CLIENT_NAME       = "Rapid Fire HB"
+MARKET_PATH       = BASE / "Market Deals" / "The Cash Offer Market Deals.xlsx"
+CLIENT_NAME       = "The Cash Offer Company"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Rapid Fire HB started doing business with 8020REI on 2021-11-23
-CLIENT_START_DATE = pd.to_datetime("2021-11-23")
-print(f"Filtering leads/deals to on or after: {CLIENT_START_DATE.date()}")
+# The Cash Offer Company started doing business with 8020REI on 2023-06-14
+CLIENT_START_DATE = pd.to_datetime("2023-06-14")
+print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
 # ── Analysis window ──────────────────────────────────────────────────────────
 # The window is defined entirely by the files present in Fulfillments/.
@@ -161,8 +161,10 @@ def fulfillment_distress_counts(df_sub, dist_long_lookup):
     against fulfillment (C/D/E/F/G). Domain often has fewer binary flags
     set per FOLIO, so reading from domain there undercounts.
 
-    ABSENTEE / Owner Occupied stay domain-derived (3-way classification,
-    fulfillment doesn't expose it the same way).
+    ABSENTEE (3-way: Absentee / Absentee Out of State / Owner Occupied) is also
+    fulfillment-sourced — via the FOLIO-keyed ff_abs map (max across months) — so
+    it reflects the point-in-time status at recommendation, not domain's current-
+    only value. See absentee_counts_from_ff / ff_abs.
     """
     folios_set = set(df_sub['FOLIO'].dropna().astype(str).str.strip().unique())
     result = {dtype: 0 for dtype in distress_order}
@@ -171,11 +173,7 @@ def fulfillment_distress_counts(df_sub, dist_long_lookup):
         _sub = dist_long_lookup[_key.isin(folios_set)]
         for dtype in distress_order:
             result[dtype] = int(_sub[_sub['dtype'] == dtype]['FOLIO'].nunique())
-    if 'ABSENTEE' in df_sub.columns:
-        abs_vals = pd.to_numeric(df_sub['ABSENTEE'], errors='coerce')
-        result['Absentee']              = int((abs_vals == 1).sum())
-        result['Absentee Out of State'] = int((abs_vals == 2).sum())
-        result['Owner Occupied']        = int((abs_vals == 0).sum())
+    result.update(absentee_counts_from_ff(df_sub['FOLIO']))
     return result
 
 
@@ -251,6 +249,30 @@ dr_ff_rows = pd.DataFrame({'FOLIO': list(dr_in_ff_folios), 'dtype': 'Default Ris
 dist_long = pd.concat([dist_long, dr_ff_rows], ignore_index=True)
 ff_distress_map = dist_long.groupby('FOLIO')['dtype'].apply(set).to_dict()
 
+# ── ABSENTEE per FOLIO from the FULFILLMENT file (max across months) ──────────
+# ABSENTEE is a 3-way code (0 = owner-occupied, 1 = in-state absentee,
+# 2 = out-of-state). The fulfillment file is the source of truth for C/D/E/F/G
+# (domain holds only current ownership, not the point-in-time status when the
+# property was recommended). MAX across the window = 'most-distressed status ever
+# seen' (2 > 1 > 0), consistent with the 'ever-flagged' rule used for the binary
+# distresses — and reproducible by sorting the compilation's ABSENTEE column
+# largest-to-smallest and keeping the top row per FOLIO.
+if 'ABSENTEE' in df.columns:
+    ff_abs = (pd.to_numeric(df['ABSENTEE'], errors='coerce')
+              .groupby(df['FOLIO'].astype(str).str.strip()).max())
+else:
+    ff_abs = pd.Series(dtype=float)
+
+def absentee_counts_from_ff(folios):
+    """3-way ABSENTEE counts (unique FOLIO) from fulfillment ff_abs, for C/D/E/F/G."""
+    idx = pd.Series(list(folios)).dropna().astype(str).str.strip().unique()
+    vals = ff_abs.reindex(idx)
+    return {
+        'Absentee':              int((vals == 1).sum()),
+        'Absentee Out of State': int((vals == 2).sum()),
+        'Owner Occupied':        int((vals == 0).sum()),
+    }
+
 C_dist   = {dtype: int(dist_long[dist_long['dtype'] == dtype]['FOLIO'].nunique())
             for dtype in distress_order}
 C_likely = count_by_bin(ff_agg['ff_likely'], likely_bins, likely_labels)
@@ -282,7 +304,14 @@ dl['dl_mkt']  = dl['MARKETING DM COUNT'] + dl['MARKETING SMS COUNT']
 dl['FOLIO_key'] = dl['FOLIO'].astype(str).str.strip()
 dl.loc[dl['FOLIO_key'] == 'nan', 'FOLIO_key'] = np.nan
 
-# ── Filter leads/deals to on or after CLIENT_START_DATE ──────────────────────
+# ── Filter leads/deals to on or after the START OF THE FULFILLMENT WINDOW ─────
+# Attribution rule: a lead/deal can only be credited to this fulfillment if it
+# occurred during the analysis window or after it (the latter captures the data-
+# validation lag — deals that mature after WINDOW_END). Anything dated before the
+# window predates the recommendation and cannot be its result, so it is excluded.
+# This aligns F/G with Column D, which already uses SOLD_SINCE = WINDOW_START.
+# (CLIENT_START_DATE is retained above for documentation; it is no longer the cutoff.)
+LEADS_DEALS_SINCE = WINDOW_START
 # Date filter per status:
 #   Lead        → LEAD DATE        (blank date → included, can't rule it out)
 #   Appointment → APPOINTMENT DATE (blank date → included; counted as Lead in report)
@@ -298,19 +327,19 @@ dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.
 dl.loc[dl['PROPERTY STATUS'] == 'Deal',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Deal',        'LAST SALE DATE'],   errors='coerce')
 # Contracts use LEAD DATE if available; blank → included as lead (uncertain, can't rule out)
 
-# Lead-type statuses: include if date >= CLIENT_START_DATE OR date is blank (uncertain, can't rule out)
-# Deals: must have a valid LAST SALE DATE >= CLIENT_START_DATE
+# Lead-type statuses: include if date >= LEADS_DEALS_SINCE OR date is blank (uncertain, can't rule out)
+# Deals: must have a valid LAST SALE DATE >= LEADS_DEALS_SINCE
 _lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
 _keep = (
-    (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= CLIENT_START_DATE))) |
-    (~_lead_types & (dl['_date_col'] >= CLIENT_START_DATE))
+    (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= LEADS_DEALS_SINCE))) |
+    (~_lead_types & (dl['_date_col'] >= LEADS_DEALS_SINCE))
 )
 dl = dl[_keep].drop(columns=['_date_col'])
 
 # Appointments, Dead Leads, and Contracts counted as Leads in the final report
 dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
 
-print(f"  Rows after date filter (>= {CLIENT_START_DATE.date()}, blanks kept for leads): {len(dl):,}")
+print(f"  Rows after date filter (>= {LEADS_DEALS_SINCE.date()} = window start, blanks kept for leads): {len(dl):,}")
 print(f"    Leads (incl. appointments + dead leads): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
 
 ff_for_join = ff_agg.reset_index().rename(columns={'FOLIO': 'FOLIO_key'})
@@ -418,25 +447,21 @@ dom = (dom.sort_values('LAST SALE DATE', na_position='first')
           .reset_index(drop=True))
 print(f"  After dedupe by FOLIO: {len(dom):,} rows ({_pre_dedupe - len(dom):,} dropped)")
 
-# ── Owner Occupied cross-reference for Columns C / F / G ─────────────────────
-# Fulfillment distress data has no Owner Occupied signal; derive it from
-# domain ABSENTEE (0 = owner-occupied) by joining on FOLIO.
-print("\nPatching Owner Occupied for Columns C/F/G via domain ABSENTEE...")
-_dom_abs = (dom[['FOLIO', 'ABSENTEE']]
-            .assign(FOLIO=dom['FOLIO'].astype(str).str.strip(),
-                    ABSENTEE=pd.to_numeric(dom['ABSENTEE'], errors='coerce'))
-            .drop_duplicates('FOLIO')
-            .set_index('FOLIO')['ABSENTEE'])
-
-ff_folio_idx = ff_agg.index.astype(str).str.strip()
-C_dist['Owner Occupied'] = int((_dom_abs.reindex(ff_folio_idx) == 0).sum())
-
-leads_ff_idx = leads_ff['FOLIO_key'].dropna().astype(str).str.strip().unique()
-F_dist['Owner Occupied'] = int((_dom_abs.reindex(leads_ff_idx) == 0).sum())
-
-deals_ff_idx = deals_ff['FOLIO_key'].dropna().astype(str).str.strip().unique()
-G_dist['Owner Occupied'] = int((_dom_abs.reindex(deals_ff_idx) == 0).sum())
-print(f"  Owner Occupied — C: {C_dist['Owner Occupied']:,} | F: {F_dist['Owner Occupied']:,} | G: {G_dist['Owner Occupied']:,}")
+# ── ABSENTEE (3-way) for Columns C / F / G — from FULFILLMENT ABSENTEE ────────
+# ABSENTEE is a 3-way classification (0 = owner-occupied, 1 = in-state absentee,
+# 2 = out-of-state), not a binary flag, so it is excluded from DOMAIN_DIST_MAP /
+# dist_long / ff_distress_map. C (built from dist_long) and F/G (built from
+# ff_distress_map) therefore carry NO absentee signal on their own — patch all
+# three classes here from the fulfillment ff_abs map (max across months), the
+# same source D/E use. Domain is NOT used: it holds only current ownership, not
+# the point-in-time status when the property was recommended.
+print("\nPatching Absentee / Owner Occupied for Columns C/F/G from fulfillment ABSENTEE (max across months)...")
+C_dist.update(absentee_counts_from_ff(ff_agg.index))
+F_dist.update(absentee_counts_from_ff(leads_ff['FOLIO_key']))
+G_dist.update(absentee_counts_from_ff(deals_ff['FOLIO_key']))
+print(f"  Absentee              — C: {C_dist['Absentee']:,} | F: {F_dist['Absentee']:,} | G: {G_dist['Absentee']:,}")
+print(f"  Absentee Out of State — C: {C_dist['Absentee Out of State']:,} | F: {F_dist['Absentee Out of State']:,} | G: {G_dist['Absentee Out of State']:,}")
+print(f"  Owner Occupied        — C: {C_dist['Owner Occupied']:,} | F: {F_dist['Owner Occupied']:,} | G: {G_dist['Owner Occupied']:,}")
 
 # Column B — filter to BUYBOX SCORE > 0
 dom['BUYBOX SCORE'] = pd.to_numeric(dom['BUYBOX SCORE'], errors='coerce').fillna(0)
@@ -542,10 +567,12 @@ print("Action Plan:", E_action)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 5b: Enrich fulfillment compilation for validation, then save
-# Adds 3 columns the user can use to spot-check D, F/G, and E:
+# Adds columns the user can use to spot-check D, F/G, and E:
 #   • LAST SALE DATE   — most recent sale per FOLIO from domain (validates D)
 #   • PROPERTY STATUS  — Lead/Deal from deals/leads file (validates F/G)
 #   • MARKET DEAL      — Yes/No flag from market deals overlap (validates E)
+#   • CLIENT LEAD      — Yes/No flag, FOLIO is in the report's Column F population
+#   • CLIENT DEAL      — Yes/No flag, FOLIO is in the report's Column G population
 # ══════════════════════════════════════════════════════════════════════════════
 print("\nEnriching fulfillment compilation with validation columns...")
 
@@ -567,10 +594,27 @@ _dl_status = (dl[['FOLIO_key', 'PROPERTY STATUS']]
 
 _mkt_folios = set(mkt_sold['FOLIO'].astype(str).str.strip().unique())
 
+# Client Lead / Client Deal flags — derived from the SAME populations the report
+# uses for Columns F and G (leads_ff / deals_ff), so a "Yes" count reconciles
+# against the report's unique-FOLIO membership for those columns. Note: F/G in the
+# report count rows, so a FOLIO with multiple leads contributes 1 "Yes" here but
+# may contribute >1 to the report total.
+_lead_folios = set(leads_ff['FOLIO_key'].dropna().astype(str).str.strip().unique())
+_deal_folios = set(deals_ff['FOLIO_key'].dropna().astype(str).str.strip().unique())
+
 _df_folio_key = df['FOLIO'].astype(str).str.strip()
 df['LAST SALE DATE']  = _df_folio_key.map(_last_sale)
 df['PROPERTY STATUS'] = _df_folio_key.map(_dl_status).fillna('')
 df['MARKET DEAL']     = np.where(_df_folio_key.isin(_mkt_folios), 'Yes', 'No')
+df['CLIENT LEAD']     = np.where(_df_folio_key.isin(_lead_folios), 'Yes', 'No')
+df['CLIENT DEAL']     = np.where(_df_folio_key.isin(_deal_folios), 'Yes', 'No')
+# Counts below are UNIQUE FOLIOs (= report F/G membership). The compilation has
+# ~one row per FOLIO-month, so a filter on CLIENT LEAD=Yes returns more *rows*
+# than this — each flagged FOLIO repeats across the months it was recommended.
+print(f"  Audit flags (unique FOLIOs) — "
+      f"MARKET DEAL: {len(_mkt_folios):,} | "
+      f"CLIENT LEAD: {len(_lead_folios):,} (= report Col F) | "
+      f"CLIENT DEAL: {len(_deal_folios):,} (= report Col G)")
 
 print(f"  Saving Fulfillment_Compilation.xlsx with validation columns...")
 # strings_to_urls=False  — disables xlsxwriter's URL auto-detection
@@ -709,7 +753,8 @@ def write_excel(path, rows, sheet_title):
             "Distress: fulfillment binary distress columns (PRE-FORECLOSURE > 0, "
             "VACANT > 0, TAXES > 0, …) per FOLIO across all months + Default Risk "
             "cross-referenced from domain.\n"
-            "Owner Occupied: cross-referenced from domain ABSENTEE column."
+            "Absentee / Absentee Out of State / Owner Occupied: fulfillment ABSENTEE "
+            "code (0/1/2), max across months per FOLIO."
         ),
         'D': (
             f"Sold\n"
@@ -718,7 +763,7 @@ def write_excel(path, rows, sheet_title):
             f"Only fulfillment-matched properties are included (domain-only sold properties excluded).\n"
             f"Scores are pre-sale fulfillment MAX values (snapshot before the sale).\n"
             f"Distress: fulfillment binary distress columns per FOLIO (same source as C); "
-            f"ABSENTEE / Owner Occupied stay domain-derived."
+            f"ABSENTEE (Absentee / Out of State / Owner Occupied) = fulfillment ABSENTEE, max across months."
         ),
         'E': (
             "Market Deals\n"
@@ -729,7 +774,7 @@ def write_excel(path, rows, sheet_title):
             "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX).\n"
             "Scores: pre-sale fulfillment MAX values (same as Column D).\n"
             "Distress: fulfillment binary distress columns per FOLIO (same source as C/D); "
-            "ABSENTEE / Owner Occupied stay domain-derived."
+            "ABSENTEE (Absentee / Out of State / Owner Occupied) = fulfillment ABSENTEE, max across months."
         ),
         'F': (
             "Clients Lead\n"

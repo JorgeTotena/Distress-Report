@@ -3,6 +3,7 @@ Fulfillment_Compilation.xlsx
 
 # Per-client data files — vary every run, never tracked
 Fulfillments/*.xlsx
+Fulfillments/**/*.xlsx
 Domain Full Data/*.xlsx
 Domain Full Data/*.parquet
 Market Deals/*.xlsx
