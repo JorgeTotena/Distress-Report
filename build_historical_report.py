@@ -61,12 +61,20 @@ def _window_label(window_start: pd.Timestamp, window_end: pd.Timestamp) -> str:
 
 
 def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
-                    window_start: pd.Timestamp) -> dict:
-    """Replicate generate.run_analysis using the shared in-memory frames.
+                    window_start: pd.Timestamp,
+                    ff_distress_map: dict | None = None,
+                    ff_abs=None,
+                    dist_map: dict | None = None) -> dict:
+    """Build the companion analysis from the shared in-memory frames.
 
-    Signal-reading rules (pick_signal_row at the Marketing First Recommendation
-    period, ABSENTEE active on 1 or 2) are imported from generate.py so there is
-    a single source of truth for the methodology.
+    Signal determination MUST match the Excel audit (Column D). When the Excel's
+    per-FOLIO distress data is supplied (ff_distress_map / ff_abs / dist_map), each
+    sold property's active signals are taken from it — i.e. "flagged in ANY
+    fulfillment month across the window" (union), with Default Risk from the domain
+    flag and ABSENTEE the 3-way max (combined in-state + out-of-state). This is the
+    same source build_domain_report.py uses for C/D/E/F/G, so counts reconcile
+    exactly. If the maps are not supplied (standalone use), it falls back to the
+    point-in-time read at the Marketing First Recommendation period.
     """
     ff = ff.copy()
     ff["FOLIO"] = ff["FOLIO"].astype(str).str.strip().str.upper()
@@ -93,29 +101,47 @@ def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
     df = df[df["LAST SALE DATE"] >= window_start]
     df["MFR_MONTH"] = df["MARKETING FIRST RECOMMENDATION"].dt.to_period("M").astype(str)
 
-    available_signals = [c for c in gen.SIGNAL_COLS if c in df.columns]
-
-    rows, fallback_flags = [], []
+    # One row per FOLIO — selected at the MFR period purely for the row METADATA
+    # (COUNTY, OWNER TYPE, sale date). Signal flags are set separately below.
+    rows = []
     for _, group in df.groupby("FOLIO"):
-        row, is_fb = gen.pick_signal_row(group)
+        row, _ = gen.pick_signal_row(group)
         rows.append(row)
-        fallback_flags.append(is_fb)
     adf = pd.DataFrame(rows).reset_index(drop=True)
-    adf["IS_FALLBACK"] = fallback_flags
 
-    for col in available_signals:
-        adf[col] = pd.to_numeric(adf[col], errors="coerce")
-        adf[f"{col}_active"] = gen.is_active(adf[col], col).astype(int)
+    aligned = ff_distress_map is not None and dist_map is not None
+    if aligned:
+        # ── Excel-aligned signals: "ever-flagged across the window" union ──
+        # Restrict to exactly the signals the Excel audit tracks (DOMAIN_DIST_MAP
+        # labels + combined ABSENTEE), so the breakdown reconciles to Column D.
+        signal_to_label = {c: lbl for c, lbl in dist_map.items() if c in gen.SIGNAL_COLS}
+        available_signals = [c for c in gen.SIGNAL_COLS
+                             if c == "ABSENTEE" or c in signal_to_label]
+        # Normalise keys (strip + upper) to match adf["FOLIO"], regardless of how
+        # the source dict/series was keyed.
+        dmap = {str(k).strip().upper(): v for k, v in ff_distress_map.items()}
+        amap = {str(k).strip().upper(): v for k, v in dict(ff_abs).items()} if ff_abs is not None else {}
+        folios = adf["FOLIO"]
+        for col in available_signals:
+            if col == "ABSENTEE":
+                flag = folios.map(lambda f: 1 if amap.get(f) in (1, 2) else 0)
+            else:
+                lbl = signal_to_label[col]
+                flag = folios.map(lambda f, l=lbl: 1 if l in dmap.get(f, ()) else 0)
+            adf[f"{col}_active"] = flag.astype(int)
+            adf[col] = adf[f"{col}_active"]
+    else:
+        # ── Fallback: point-in-time read at MFR period (standalone use) ──
+        available_signals = [c for c in gen.SIGNAL_COLS if c in df.columns]
+        for col in available_signals:
+            adf[col] = pd.to_numeric(adf[col], errors="coerce")
+            adf[f"{col}_active"] = gen.is_active(adf[col], col).astype(int)
+
     adf["SIGNAL_COUNT"] = adf[[f"{c}_active" for c in available_signals]].sum(axis=1)
 
     def active_signals_str(row: pd.Series) -> str:
-        parts = []
-        for col in available_signals:
-            if row.get(f"{col}_active", 0) == 1:
-                label = gen.LABEL_MAP.get(col, col.title())
-                if col == "ABSENTEE" and row[col] == 2:
-                    label = "Absentee (OOS)"
-                parts.append(label)
+        parts = [gen.LABEL_MAP.get(col, col.title())
+                 for col in available_signals if row.get(f"{col}_active", 0) == 1]
         return ", ".join(parts) if parts else "&#8212;"
 
     adf["ACTIVE_SIGNALS_STR"] = adf.apply(active_signals_str, axis=1)
@@ -172,8 +198,15 @@ def generate_historical(client_name: str,
                         ff: pd.DataFrame,
                         dom: pd.DataFrame,
                         out_dir: Path,
-                        report_date: str | None = None) -> dict:
-    """Build the HTML + PDF report next to the Excel report. Returns paths + N."""
+                        report_date: str | None = None,
+                        ff_distress_map: dict | None = None,
+                        ff_abs=None,
+                        dist_map: dict | None = None) -> dict:
+    """Build the HTML + PDF report next to the Excel report. Returns paths + N.
+
+    Pass ff_distress_map / ff_abs / dist_map (from build_domain_report.py) so the
+    sold-property distress breakdown reconciles exactly with the Excel audit.
+    """
     if not GENERATE_PY.exists():
         raise FileNotFoundError(
             f"Companion report template not found: {GENERATE_PY}\n"
@@ -193,9 +226,12 @@ def generate_historical(client_name: str,
     print("\nGenerating companion Fulfillment Distress Analysis (HTML + PDF)...")
     print(f"  Window: {window_label}  |  Report date: {report_date}")
 
-    analysis = _build_analysis(gen, ff, dom, window_start)
+    analysis = _build_analysis(gen, ff, dom, window_start,
+                               ff_distress_map=ff_distress_map, ff_abs=ff_abs, dist_map=dist_map)
     n = len(analysis["adf"])
     print(f"  Matched sold properties (= Column D): {n:,}")
+    if ff_distress_map is not None:
+        print("  Signal source: Excel-aligned (ever-flagged across window + domain Default Risk)")
     print(f"  Counties with matched sales: "
           f"{len([c for c in analysis['all_buybox_counties']])}")
 

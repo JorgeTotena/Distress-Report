@@ -984,6 +984,11 @@ try:
         ff=df,
         dom=dom,
         out_dir=BASE,
+        # Pass the Excel's per-FOLIO distress so the companion's sold-property
+        # breakdown reconciles exactly with Column D (same source as C/D/E/F/G).
+        ff_distress_map=ff_distress_map,
+        ff_abs=ff_abs,
+        dist_map=DOMAIN_DIST_MAP,
     )
 except Exception as _e:
     print(f"\n[WARN] Companion HTML/PDF report not generated: {_e}")
