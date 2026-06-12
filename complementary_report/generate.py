@@ -514,6 +514,15 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
   color: #999999;
 }
 
+/* Page-number fix: report.css sets .page-footer to position:fixed in print,
+   which pins one footer to the viewport so it REPEATS on every printed page
+   (e.g. a "Page 3" footer showing up on page 1). Anchor each footer to its own
+   .page instead, so each page shows its own number exactly once. */
+@media print {
+  .page { position: relative; }
+  .page-footer { position: absolute !important; bottom: 36px; left: 56px; right: 56px; }
+}
+
 /* Bar chart component */
 .bar-row   { display: flex; align-items: center; gap: 10px; margin-bottom: 5px; }
 .bar-label { font-size: 11px; color: #2d2d2d; width: 130px; flex-shrink: 0; text-align: right; }
@@ -979,6 +988,11 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
       </div>
     </div>
   </div>
+  <footer class="page-footer">
+    <span><a href="https://8020rei.com">8020rei.com</a></span>
+    <span class="footer-client">{client_name}</span>
+    <span>Page 2</span>
+  </footer>
 </section>
 
 
@@ -1053,7 +1067,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
   <div class="flow-footer">
     <span><a href="https://8020rei.com">8020rei.com</a></span>
     <span class="footer-client">{client_name}</span>
-    <span>Page 3b</span>
+    <span>Page 4</span>
   </div>
 </section>
 
@@ -1143,7 +1157,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
   <div class="flow-footer">
     <span><a href="https://8020rei.com">8020rei.com</a></span>
     <span class="footer-client">{client_name}</span>
-    <span>Page 4</span>
+    <span>Page 5</span>
   </div>
 </section>
 
