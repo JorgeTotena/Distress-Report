@@ -945,35 +945,39 @@ def write_excel(path, rows, sheet_title):
                 ws[r][ci].alignment     = center_align
                 ws[r][ci].border        = thin
 
-    # ── Highlight highs/lows: top-3 (green) and bottom-3 (red) per column,
-    #    computed within each section's category rows so the client can see at a
-    #    glance where they have more vs. less opportunity. Totals are excluded.
-    #    Small sections degrade gracefully: k = min(3, rows//2), so top/bottom
-    #    never overlap. Columns where every value is equal are left plain.
+    # ── Highlight highs/lows per column within each section (green = high /
+    #    more opportunity, red = low / less), so the client can scan it. Totals
+    #    excluded. Distress and ZIP use top-3 / bottom-3; every other section
+    #    uses just the single top & bottom. k is capped at rows//2 so the top
+    #    and bottom sets never overlap; columns where all values are equal are
+    #    left plain.
     hi_fill = PatternFill('solid', fgColor='C6EFCE')   # light green
     hi_font = Font(name='Helvetica', bold=True, size=10, color='006100')
     lo_fill = PatternFill('solid', fgColor='FFC7CE')   # light red
     lo_font = Font(name='Helvetica', bold=True, size=10, color='9C0006')
+    THREE_EACH = {'Distress', ZIP_SECTION_TITLE}       # rest get top/bottom 1
 
     sections, current = [], None
     for i, row_data in enumerate(rows):
         ws_row, label = i + 2, row_data[0]
         if label in SECTION_NAMES:
-            current = []
+            current = {'name': label, 'rows': []}
             sections.append(current)
         elif label == '':
             current = None
         elif label == 'Total':
             continue                      # exclude section totals from highs/lows
         elif current is not None:
-            current.append((ws_row, row_data))
+            current['rows'].append((ws_row, row_data))
 
     for sec in sections:
-        k = min(3, len(sec) // 2)
+        rws = sec['rows']
+        cap = 3 if sec['name'] in THREE_EACH else 1
+        k = min(cap, len(rws) // 2)
         if k == 0:
             continue
         for ci in COUNT_COLS:             # 0-based row_data index; Excel col = ci+1
-            vals = [(wr, rd[ci]) for wr, rd in sec if isinstance(rd[ci], (int, float))]
+            vals = [(wr, rd[ci]) for wr, rd in rws if isinstance(rd[ci], (int, float))]
             if len(vals) < 2 or max(v for _, v in vals) == min(v for _, v in vals):
                 continue
             ranked   = sorted(vals, key=lambda t: t[1], reverse=True)
@@ -985,9 +989,9 @@ def write_excel(path, rows, sheet_title):
                 c = ws.cell(row=wr, column=ci + 1); c.fill = lo_fill; c.font = lo_font
 
     # Legend for the highlighting (off to the right of the table)
-    ws.cell(row=1, column=13, value='Top 3 per section (most)').fill = hi_fill
+    ws.cell(row=1, column=13, value='Highest per section (most)').fill = hi_fill
     ws.cell(row=1, column=13).font = hi_font
-    ws.cell(row=2, column=13, value='Bottom 3 per section (least)').fill = lo_fill
+    ws.cell(row=2, column=13, value='Lowest per section (least)').fill = lo_fill
     ws.cell(row=2, column=13).font = lo_font
     ws.column_dimensions['M'].width = 26
 
