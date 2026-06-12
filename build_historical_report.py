@@ -5,10 +5,10 @@ Generates the Atlas-style "Fulfillment Distress Analysis" HTML + PDF report as a
 companion to the Excel distress report — automatically, from the SAME data that
 build_domain_report.py has already loaded. No second data drop, no re-parsing.
 
-The heavy HTML/PDF logic lives in the historical pipeline's generate.py
-(.../historical_distress_report/03_generate_report/generate.py). This module
-imports that file and feeds it data sourced from the Distress Report project so
-the two reports stay perfectly in line:
+The heavy HTML/PDF logic lives in the vendored template complementary_report/
+generate.py (with complementary_report/analyze.py for the Distress Universe).
+This module imports those files and feeds them data sourced from the Distress
+Report project so the two reports stay perfectly in line:
 
   • Analysis window      = the Excel report's window (WINDOW_START .. WINDOW_END)
   • "Sold properties" (N) = Column D of the Excel report (sold-since-window-start
@@ -29,10 +29,16 @@ import numpy as np
 import pandas as pd
 
 BASE = Path(__file__).parent
-# Sibling project that owns the HTML/PDF template + brand assets.
-HISTORICAL_ROOT = BASE.parent / "historical_distress_report" / "historical_distress_report"
-GENERATE_PY = HISTORICAL_ROOT / "03_generate_report" / "generate.py"
-ANALYZE_PY = HISTORICAL_ROOT / "02_data_processing" / "analyze.py"
+# Report template + signal helpers, vendored into this repo (self-contained —
+# no cross-repo dependency). Copied from the former historical_distress_report
+# pipeline; the standalone merge/main scaffolding is not needed here because
+# build_domain_report.py drives generation from its already-loaded data.
+COMPANION_DIR = BASE / "complementary_report"
+GENERATE_PY = COMPANION_DIR / "generate.py"
+ANALYZE_PY = COMPANION_DIR / "analyze.py"
+# Brand assets (CSS + logos) already tracked in this repo. generate.py resolves
+# these relative to its own location, so we override its globals after import.
+ASSET_CS = BASE / "8020REI-skills-main" / "8020REI-skills-main" / "customer_success"
 
 
 def _load_module(name: str, path: Path):
@@ -170,10 +176,15 @@ def generate_historical(client_name: str,
     """Build the HTML + PDF report next to the Excel report. Returns paths + N."""
     if not GENERATE_PY.exists():
         raise FileNotFoundError(
-            f"Historical report template not found: {GENERATE_PY}\n"
-            "  The companion pipeline 'historical_distress_report' must sit alongside this project."
+            f"Companion report template not found: {GENERATE_PY}\n"
+            "  Expected the vendored template at complementary_report/generate.py."
         )
     gen = _load_module("hist_generate", GENERATE_PY)
+    # Point the template at the brand assets tracked in this repo (generate.py
+    # otherwise resolves them relative to its own former pipeline location).
+    gen.REPORT_CSS_FILE = ASSET_CS / "standards" / "report.css"
+    gen.LOGO_FULL = ASSET_CS / "logos" / "logo-full-light.png"
+    gen.LOGO_ICON = ASSET_CS / "logos" / "logo-icon-light.png"
 
     report_date = report_date or pd.Timestamp.today().strftime("%B %Y")
     report_month = pd.Timestamp.today().strftime("%Y-%m")
