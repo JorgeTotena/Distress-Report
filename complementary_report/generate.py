@@ -526,7 +526,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
 .annex-page {
   width: 8.5in;
   margin: 0 auto;
-  padding: 48px 56px 48px;
+  padding: 40px 56px 24px;
   position: relative;
   background: #ffffff;
   page-break-inside: auto;
@@ -534,11 +534,28 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
 }
 @media screen { .annex-page { border: 1px solid #d4d4d4; margin-bottom: 24px; } }
 
+/* Blank-page fix: a fixed .page already forces a break-after; when the first
+   flowing .annex-page also forces a break-before, the two stack and Chromium
+   emits a blank page between them. Suppress the redundant break-before only at
+   that boundary (a .page immediately followed by an .annex-page). Annex→annex
+   boundaries keep their break so each flowing section still starts fresh. */
+.page + .annex-page { page-break-before: avoid; }
+/* No trailing blank page after the final section. */
+.annex-page:last-child, body > section:last-child { page-break-after: avoid; }
+
 /* Table header repeats on page break */
 .annex-page thead { display: table-header-group; }
 .annex-page table th { font-size: 0.5625rem; padding: 4px 4px 4px 0; }
 .annex-page table td { font-size: 0.625rem;  padding: 3px 4px 3px 0; }
 .annex-page table tr { page-break-inside: avoid; }
+
+/* Compact the flowing Recommendations/annex pages so their content + footer fit
+   on one page (otherwise the footer spills onto a near-empty trailing page). */
+.annex-page .action-title { font-size: 1rem; margin-bottom: 12px; padding-bottom: 8px; }
+.annex-page h3 { margin-top: 8px; margin-bottom: 6px; }
+.annex-page ul.bullet-list li { margin-bottom: 4px; }
+.annex-page p { margin-bottom: 6px; }
+.annex-page .two-col { gap: 24px; margin-bottom: 12px; }
 
 /* flow-footer: static footer for flowing sections — never fixed, never repeats */
 .flow-footer {
@@ -551,7 +568,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
   letter-spacing: 0.05em;
   border-top: 1px solid #d4d4d4;
   padding-top: 10px;
-  margin-top: 32px;
+  margin-top: 16px;
 }
 .flow-footer a { color: #999999; text-decoration: none; }
 .flow-footer .footer-client { font-size: 0.6875rem; letter-spacing: 0; color: #999999; }
@@ -581,13 +598,20 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
         return "\n      ".join(rows)
 
     def stack_rows_html() -> str:
+        # Bucketed (0 / 1 / 2 / 3+) so the table stays 4 rows regardless of how
+        # many signals stack per property — keeps Page 2 from overflowing.
+        buckets = [
+            ("0 signals", int(stack.get(0, 0))),
+            ("1 signal",  int(stack.get(1, 0))),
+            ("2 signals", int(stack.get(2, 0))),
+            ("3+ signals", int(sum(c for s, c in stack.items() if s >= 3))),
+        ]
         rows = []
-        for sig_count, cnt in stack.items():
-            pct   = round(int(cnt) / n * 100, 1)
-            label = f"{int(sig_count)} signal{'s' if sig_count != 1 else ''}"
+        for label, cnt in buckets:
+            pct = round(cnt / n * 100, 1) if n else 0
             rows.append(
                 f"<tr><td>{label}</td>"
-                f"<td class='num'>{int(cnt)}</td>"
+                f"<td class='num'>{cnt}</td>"
                 f"<td class='num'>{pct}%</td></tr>"
             )
         return "\n          ".join(rows)
@@ -630,7 +654,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
             "05": "May", "06": "June", "07": "July", "08": "August",
             "09": "September", "10": "October", "11": "November", "12": "December",
         }
-        rows = []
+        items = []
         for period, cnt in monthly.items():
             ps = str(period)
             try:
@@ -638,7 +662,20 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
                 label  = f"{month_names.get(mo, mo)} {yr}"
             except ValueError:
                 label = ps
-            rows.append(f"<tr><td>{label}</td><td class='num'>{int(cnt)}</td></tr>")
+            items.append((label, int(cnt)))
+        # Two month/count column-pairs per row so long windows (e.g. 13+ months)
+        # don't overflow the page. Left half fills first, then the right half.
+        half = (len(items) + 1) // 2
+        left, right = items[:half], items[half:]
+        rows = []
+        for i in range(half):
+            ll, lc = left[i]
+            if i < len(right):
+                rl, rc = right[i]
+                rcells = f"<td>{rl}</td><td class='num'>{rc}</td>"
+            else:
+                rcells = "<td></td><td></td>"
+            rows.append(f"<tr><td>{ll}</td><td class='num'>{lc}</td>{rcells}</tr>")
         return "\n          ".join(rows)
 
     def dov_rows_html() -> str:
@@ -984,7 +1021,7 @@ ul.bullet-list li { font-size: 0.875rem; margin-bottom: 6px; }
       </p>
       <h3 style="margin-top:10px">Monthly Sale Volume</h3>
       <table>
-        <thead><tr><th>Month</th><th class="num">Properties Sold</th></tr></thead>
+        <thead><tr><th>Month</th><th class="num">Sold</th><th>Month</th><th class="num">Sold</th></tr></thead>
         <tbody>
           {monthly_rows_html()}
         </tbody>
