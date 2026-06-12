@@ -33,14 +33,14 @@ FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "The Cash Offer Market Deals.xlsx"
-CLIENT_NAME       = "The Cash Offer Company"
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals Pillar Home Buyers.xlsx"
+CLIENT_NAME       = "Pillar Home Buyers"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# The Cash Offer Company started doing business with 8020REI on 2023-06-14
-CLIENT_START_DATE = pd.to_datetime("2023-06-14")
+# Pillar Home Buyers started doing business with 8020REI on ~2024-05-24
+CLIENT_START_DATE = pd.to_datetime("2024-05-24")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
 # ── Analysis window ──────────────────────────────────────────────────────────
@@ -91,7 +91,8 @@ COLS = [
     'Sold Concentration %Sold', 'Sold to investors concentration',
     'Client Deals Concentration', 'Client Leads Concentration',
 ]
-SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress'}
+ZIP_SECTION_TITLE = 'ZIP Code — most Client Deals first (BUYBOX SCORE > 0)'
+SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress', ZIP_SECTION_TITLE}
 
 # ── Default Risk lookup — derived from domain (DEFAULT RISK column) ───────────
 # Loaded early so dr_folios is available for fulfillment injection (STEP 1)
@@ -630,6 +631,56 @@ print(f"  Saved: {COMPILED_PATH.name}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# STEP 5c: ZIP-level breakdown block
+# One row per ZIP across the same six populations (B–G), so the client can see how
+# each of their zips is behaving. Ordered by Client Deals (Column G) descending —
+# "the zips with the most deals first" — with Sold (D) then Fulfillment (C) as
+# tiebreakers so the zero-deal tail still sorts sensibly.
+#
+# Universe excludes BUYBOX SCORE 0: the domain side uses dom_b (already > 0), and
+# every fulfillment-recommended property is > 0, so C/D/E/F/G inherit the rule and
+# the ZIP-block column totals reconcile with the main report's column totals.
+# ZIP set = union of domain (buybox>0) zips and fulfillment zips.
+# ══════════════════════════════════════════════════════════════════════════════
+print("\nComputing ZIP-level breakdown block...")
+
+def _norm_zip(z):
+    if pd.isna(z): return None
+    s = re.sub(r'\D', '', str(z))[:5]
+    return s if len(s) == 5 else None
+
+# FOLIO → ZIP from the fulfillment compilation (zip is stable across months for a
+# FOLIO; keep the first valid one). Used to attribute Column C FOLIOs to a zip.
+_dfz        = df[['FOLIO', 'ZIP']].copy()
+_dfz['_z']  = _dfz['ZIP'].map(_norm_zip)
+_dfz['_fk'] = _dfz['FOLIO'].astype(str).str.strip()
+_ff_zipmap  = _dfz.dropna(subset=['_z']).drop_duplicates('_fk').set_index('_fk')['_z']
+
+# Per-population ZIP counts (same populations the main report's columns use)
+B_zip = dom_b['ZIP'].map(_norm_zip).value_counts()                                  # Total Properties
+C_zip = pd.Series(ff_agg.index.astype(str).str.strip()).map(_ff_zipmap).value_counts()  # In fulfillment
+D_zip = sold['ZIP'].map(_norm_zip).value_counts()                                   # Sold
+E_zip = mkt_sold['ZIP'].map(_norm_zip).value_counts()                               # Market Deals
+F_zip = leads_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Leads (rows)
+G_zip = deals_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Deals (rows)
+
+_all_zips = (set(B_zip.index) | set(C_zip.index) | set(D_zip.index)
+             | set(E_zip.index) | set(F_zip.index) | set(G_zip.index))
+_all_zips.discard(None)
+
+zip_table = [
+    (z,
+     int(B_zip.get(z, 0)), int(C_zip.get(z, 0)), int(D_zip.get(z, 0)),
+     int(E_zip.get(z, 0)), int(F_zip.get(z, 0)), int(G_zip.get(z, 0)))
+    for z in _all_zips
+]
+# Sort: Client Deals (G) desc, then Sold (D) desc, then Fulfillment (C) desc, then zip asc
+zip_table.sort(key=lambda r: (-r[6], -r[3], -r[2], r[0]))
+print(f"  ZIP block: {len(zip_table):,} zips "
+      f"({sum(1 for r in zip_table if r[6] > 0):,} with >=1 client deal)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # STEP 6: Build report rows
 # ══════════════════════════════════════════════════════════════════════════════
 def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
@@ -637,7 +688,8 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
                D_lik, D_sco, D_act, D_mkt, D_dis,
                E_lik, E_sco, E_act, E_mkt, E_dis,
                F_lik, F_sco, F_act, F_mkt, F_dis,
-               G_lik, G_sco, G_act, G_mkt, G_dis):
+               G_lik, G_sco, G_act, G_mkt, G_dis,
+               zip_rows=None):
     n = len(COLS)
 
     def section_header(name):
@@ -688,6 +740,16 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
     for dtype in distress_order:
         rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], E_dis[dtype], F_dis[dtype], G_dis[dtype]))
     rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(E_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
+
+    # ── ZIP Code block — one row per zip, ordered by Client Deals desc ──────────
+    if zip_rows:
+        rows.append(blank())
+        rows.append(section_header(ZIP_SECTION_TITLE))
+        tB = tC = tD = tE = tF = tG = 0
+        for z, b, c, d, e, f, g in zip_rows:
+            rows.append(data_row(z, b, c, d, e, f, g))
+            tB += b; tC += c; tD += d; tE += e; tF += f; tG += g
+        rows.append(data_row('Total', tB, tC, tD, tE, tF, tG))
 
     return rows
 
@@ -900,8 +962,29 @@ rows = build_rows(
     E_likely, E_score, E_action, E_mkt, E_dist,
     F_likely, F_score, F_action, F_mkt, F_dist,
     G_likely, G_score, G_action, G_mkt, G_dist,
+    zip_rows=zip_table,
 )
 
 print(f"\nWriting report...")
 write_excel(OUTPUT, rows, "Max Logic - BCDEFG")
 print("\nAll done.")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 6: Companion Fulfillment Distress Analysis (Atlas-style HTML + PDF)
+# Generated automatically from the SAME data, on the SAME window, so the
+# headline "sold properties" count reconciles with Column D above. Wrapped in
+# try/except so a template/Playwright issue never blocks the Excel report.
+# ══════════════════════════════════════════════════════════════════════════════
+try:
+    from build_historical_report import generate_historical
+    generate_historical(
+        client_name=CLIENT_NAME,
+        window_start=WINDOW_START,
+        window_end=WINDOW_END,
+        ff=df,
+        dom=dom,
+        out_dir=BASE,
+    )
+except Exception as _e:
+    print(f"\n[WARN] Companion HTML/PDF report not generated: {_e}")
+    print("       The Excel distress report above is unaffected.")

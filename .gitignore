@@ -11,6 +11,12 @@ Documents/*.xlsx
 
 # Dynamic report output — filename includes client name + month
 * - Distress Report - *.xlsx
+* - Fulfillment Distress Analysis - *.html
+* - Fulfillment Distress Analysis - *.pdf
+
+# Python bytecode cache
+__pycache__/
+*.pyc
 
 # Claude Code internal state
 .claude/
