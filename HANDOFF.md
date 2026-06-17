@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-06-17 — Leverage Companies; Columns F/G now count unique property (FOLIO) + exact-row dedup of the leads file; COUNTY restored to domain (companion fix); LEAD DATE / APPOINTMENT DATE added to compilation; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
+**Last updated:** 2026-06-17 — Leverage Companies; **Columns D/E now resolve sold + market-deal status on the fulfillment-RECOMMENDED address** (domain FOLIOs can map to >1 property — Fix 11); deduped per-FOLIO **`Fulfillment_Audit.xlsx`** added + compilation auto-falls-back to CSV when it exceeds Excel's row limit (Fix 12); companion HTML/PDF **memory fix** — trims to sold rows before copy (Fix 13). Earlier this session: Columns F/G count unique property (FOLIO) + exact-row dedup of the leads file; COUNTY restored to domain; LEAD DATE / APPOINTMENT DATE added to compilation; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -111,10 +111,10 @@ All data columns populated:
 
 | Column | Description | Source | Count (Jun 2026 run) |
 |---|---|---|---|
-| B | Total Properties | Domain (BUYBOX SCORE > 0) | 348,735 |
+| B | Total Properties | Domain (BUYBOX SCORE > 0) | 369,459 |
 | C | Properties in the fulfillment | Fulfillment MAX | 434,462 |
-| D | Sold since Jan 1 2025 | Domain LAST SALE DATE ≥ Jan 1 2025, in fulfillment | 20,044 |
-| E | Market Deals | Properties bought at a significant discount and resold for profit in a short period — overlap of Market Deals file ∩ fulfillment-sold (join on PropertyID = BUYBOX ID) | 938 |
+| D | Sold since Jan 1 2025 | Domain LAST SALE DATE ≥ Jan 1 2025, in fulfillment, **resolved on the recommended address (Fix 11)** | 16,562 |
+| E | Market Deals | Properties bought at a significant discount and resold for profit in a short period — overlap of Market Deals file ∩ fulfillment-sold; **matched on the recommended address+ZIP (Fix 11)** | 742 |
 | F | Clients Lead | Fulfillment-matched leads + appointments (>= 2025-01-01), **unique property (FOLIO)** | 22,282 |
 | G | Client Deals | Fulfillment-matched deals (>= 2025-01-01), **unique property (FOLIO)** | 48 |
 | H | Sold Concentration % | Formula: =D/C | — |
@@ -136,8 +136,8 @@ All data columns populated:
 |---|---|
 | B (Total Properties) | `domain_distress_counts()` — reads binary columns from domain; ABSENTEE: 1=in-state, 2=out-of-state, 0=owner occupied |
 | C (Fulfillment) | `dist_long` built from fulfillment binary columns + Default Risk (FOLIO cross-ref) |
-| D (Sold) | `fulfillment_distress_counts(sold, dist_long)` — same source as C, restricted to sold ∩ fulfillment FOLIOs |
-| E (Market Deals) | `fulfillment_distress_counts(mkt_sold, dist_long)` — same source as C, restricted to market-deal-overlap |
+| D (Sold) | `fulfillment_distress_counts(sold, dist_long)` — same source as C, restricted to sold ∩ fulfillment FOLIOs (sold resolved on the recommended-address domain row — Fix 11) |
+| E (Market Deals) | `fulfillment_distress_counts(mkt_sold, dist_long)` — same source as C, restricted to market-deal-overlap (matched on the recommended address+ZIP — Fix 11) |
 | F (Client Leads) | `ff_distress_map` — same source as C (fulfillment binary columns); counted on the FOLIO-deduped `leads_ff`, so per-property |
 | G (Client Deals) | Same as F (per-property, on FOLIO-deduped `deals_ff`) |
 
@@ -176,10 +176,10 @@ All data columns populated:
 
 | Metric | Value |
 |---|---|
-| Domain properties (BUYBOX > 0) | 348,735 |
+| Domain properties (BUYBOX > 0) | 369,459 |
 | Fulfillment unique FOLIOs | 434,462 |
-| Sold since Jan 1 2025 (in fulfillment) | 20,044 |
-| Market Deals (overlap with fulfillment-sold) | 938 |
+| Sold since Jan 1 2025 (in fulfillment) | 16,562 |
+| Market Deals (overlap with fulfillment-sold) | 742 |
 | Client Leads (Column F, fulfillment-matched, >= 2025-01-01) | 22,282 |
 | Client Deals (Column G, fulfillment-matched, >= 2025-01-01) | 48 |
 | Owner Occupied — Column C | 306,214 |
@@ -253,6 +253,28 @@ All data columns populated:
 **Fix:** add `COUNTY` back to `_DOM_COLS_NEEDED`, delete `domain.parquet`, and re-run so the parquet rebuilds with COUNTY (now 28 columns).
 **Verified:** companion HTML + PDF regenerate; headline "matched sold properties" = 20,044 = Column D; 8 counties.
 
+### Fix 11 — FOLIO → multiple-address ambiguity: resolve D/E on the recommended property
+**Location:** `build_domain_report.py` — module-level `_addr_zip_key` helper; `ff_addr_key` build + domain dedup (STEP 3); market-deal match (STEP 5)
+**Symptom:** A market deal showed for `162 Lawrence St`, which the user could not find in the Market Deals file. Cross-check failed.
+**Root cause:** domain FOLIOs are **not unique to a physical property** — ~116k of 1.44M (~8%) map to >1 distinct ADDRESS+ZIP. The old dedup kept the **most-recent-sale** row per FOLIO, so for an ambiguous FOLIO it could keep a *different property* than the one recommended. FOLIO `F# 1300289000000003` was recommended as 162 Lawrence St (sold 1995) but its recent-sale domain row was 360 E Lake Ave (a genuine 2025 market deal) — so the deal was credited to a property the client was never recommended.
+**Fix:** new `ff_addr_key` (normalized fulfillment ADDRESS+ZIP, most-common per FOLIO). Domain dedup now sorts by `_ff_match` (does the domain row's address match the recommended address?) then `LAST SALE DATE`, keeping the **recommended-address row** (falls back to most-recent-sale when none matches). The same `_addr_zip_key` drives the market-deal address match, so a deal is credited only to the recommended property.
+**Impact:** Column E **938 → 742** market-deal FOLIOs (~216 mis-attributions removed; ~23%); Column D **20,044 → 16,562**; Column B shifts **348,735 → 369,459** (the kept domain row changed for ambiguous FOLIOs — expected, more accurate). C/F/G unchanged (fulfillment-sourced). `Market Deals - FOLIO address mismatches.xlsx` lists the affected properties.
+**Verified:** 162 Lawrence St now resolves to its 1995 sale → MARKET DEAL = No; Estate→Market-Deals 9 → 8.
+
+### Fix 12 — Compilation > Excel row limit → CSV + deduped audit file
+**Location:** `build_domain_report.py` — STEP 5b save block; new `AUDIT_PATH`
+**Symptom:** User's manual Pre-foreclosure count (4,717) disagreed with the report (7,073). Root cause was an audit-file artifact, not the report.
+**Root cause:** the compilation is ~2.97M rows — over Excel's 1,048,576-row cap. The script wrote `Fulfillment_Compilation.csv` (full data) and left a **stale** `Fulfillment_Compilation.xlsx` from an earlier, smaller run on disk; opening the CSV in Excel also **silently truncates** to the first ~1.05M rows. Both make manual dedups undercount.
+**Fix:** when the data exceeds the Excel limit, the script now (a) writes the CSV, (b) **deletes any stale `.xlsx`**, and (c) always writes **`Fulfillment_Audit.xlsx`** — one row per FOLIO (~434k, fits Excel) with the max distress flags + `CLIENT LEAD`/`CLIENT DEAL`/`MARKET DEAL`/`LAST SALE DATE`. Every B/C/D/E/F/G count reproduces in Excel with a plain filter (no dedup). DEFAULT RISK is overlaid with the domain Default-Risk set to match the report. Both the audit and report writes are now lock-resilient (fall back to a `(new)` filename if the file is open in Excel).
+**Verified:** audit reproduces the report exactly for Pre-foreclosure (7073/1302/140/596/4), Vacant, Taxes, and the corrected Estate row.
+
+### Fix 13 — Companion HTML/PDF MemoryError at scale
+**Location:** `build_historical_report.py` — `_build_analysis` and `_build_overview`
+**Symptom:** companion failed (caught) with `Unable to allocate 272 MiB for an array with shape (12, 2975360)`.
+**Root cause:** `_build_analysis` did `ff = ff.copy()` on the full ~2.97M-row fulfillment frame (pandas consolidates object columns into a giant `n_cols × n_rows` array) *before* filtering down to the ~16k sold properties it needs.
+**Fix:** compute the sold-FOLIO set from the domain first, then trim `ff` to **sold rows + needed columns** before copying/merging; `_build_overview` likewise copies only the columns the Distress Universe table needs from the 1.4M-row domain.
+**Verified:** companion regenerates; N = 16,562 = Column D; 8 counties; no OOM.
+
 ---
 
 ## Open / Decided Issues
@@ -275,6 +297,9 @@ All data columns populated:
 | Pre-foreclosure (and other binary distresses) undercounted in C/D/E/F/G | ✅ Fixed | Read binary distress from fulfillment, not MAIN DISTRESS #1-4 ranking nor domain |
 | Columns F/G inflated vs client PBI (duplicate rows + event-vs-property grain) | ✅ Fixed | Drop exact-dup rows on load + dedupe leads_ff/deals_ff by FOLIO → F/G per-property (Fix 9) |
 | Companion HTML/PDF silently failing (KeyError COUNTY) | ✅ Fixed | Restore COUNTY to `_DOM_COLS_NEEDED`, rebuild parquet (Fix 10) |
+| Market deal / sale credited to wrong property (FOLIO maps to >1 address) | ✅ Fixed | Resolve D/E on the fulfillment-recommended address; dedup prefers the matching domain row (Fix 11) |
+| Manual audits undercount (compilation > Excel limit → CSV + stale .xlsx) | ✅ Fixed | Auto-CSV fallback, delete stale .xlsx, always emit deduped `Fulfillment_Audit.xlsx` (Fix 12) |
+| Companion HTML/PDF OOM at current data scale | ✅ Fixed | Trim fulfillment to sold rows + needed cols before copy (Fix 13) |
 
 ---
 
@@ -287,7 +312,8 @@ All data columns populated:
 | `build_reports.py` | Older — generates Column C only (Max and Average); not used for main output |
 | `build_population.py` | Older — compiles fulfillment + generates audit file; not used for main output |
 | `build_deals_leads.py` | Older — generates Columns F and G only; not used for main output |
-| `Fulfillment_Compilation.xlsx` | Compiled fulfillment dataset, written each run; includes `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL` validation columns |
+| `Fulfillment_Compilation.csv` / `.xlsx` | Compiled fulfillment dataset, written each run; includes `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL`, `CLIENT LEAD`, `CLIENT DEAL` validation columns. Written as **`.csv`** when rows exceed Excel's 1,048,576 limit (stale `.xlsx` is deleted) — don't open the CSV in Excel, it truncates (Fix 12) |
+| `Fulfillment_Audit.xlsx` | **Deduped one-row-per-FOLIO audit (~434k rows, fits Excel)** — use this for manual B/C/D/E/F/G checks; every count reproduces with a plain column filter (Fix 12) |
 | `{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx` | **LATEST REPORT OUTPUT** — e.g. `SBD - Distress Report - 2026-04.xlsx` |
 | `Population_For_Calculation.xlsx` | Older audit file |
 | `Documents/Deals and Leads SBD.xlsx` | **ACTIVE** — leads, deals, appointments for SBD (auto-discovered) |

@@ -1,6 +1,11 @@
 # Generated audit files — too large for GitHub
 Fulfillment_Compilation.xlsx
 Fulfillment_Compilation.csv
+Fulfillment_Audit.xlsx
+Fulfillment_Audit (new).xlsx
+
+# Ad-hoc analysis exports written to the project root (cross-check spreadsheets)
+Market Deals - *.xlsx
 
 # Per-client data files — vary every run, never tracked
 Fulfillments/*.xlsx

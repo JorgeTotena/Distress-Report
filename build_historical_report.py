@@ -76,20 +76,29 @@ def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
     exactly. If the maps are not supplied (standalone use), it falls back to the
     point-in-time read at the Marketing First Recommendation period.
     """
-    ff = ff.copy()
-    ff["FOLIO"] = ff["FOLIO"].astype(str).str.strip().str.upper()
-    ff["PERIOD"] = ff["Month"].astype(str).str.strip()  # 'Month' is the YYYY-MM filename prefix
-    # Per methodology, LAST SALE DATE + MFR come from the domain, signals from the
-    # fulfillment. Our fulfillment export also carries these date columns, so drop
-    # them here to avoid an _x/_y merge collision (the domain values must win).
-    ff = ff.drop(columns=[c for c in ("LAST SALE DATE", "MARKETING FIRST RECOMMENDATION")
-                          if c in ff.columns])
+    total_rows = len(ff)   # full fulfillment row count (reported as-is)
 
     # Domain sales index — already deduped (most-recent sale per FOLIO) upstream.
+    # This also defines the SOLD universe used to trim the fulfillment frame below.
     sales = dom[["FOLIO", "LAST SALE DATE", "MARKETING FIRST RECOMMENDATION"]].copy()
     sales["FOLIO"] = sales["FOLIO"].astype(str).str.strip().str.upper()
     sales["LAST SALE DATE"] = pd.to_datetime(sales["LAST SALE DATE"], errors="coerce")
     sales = sales.drop_duplicates(subset=["FOLIO"], keep="last")
+    sold_folios = set(sales.loc[sales["LAST SALE DATE"] >= window_start, "FOLIO"])
+
+    # ── Trim the fulfillment frame BEFORE copying ──────────────────────────────
+    # The companion only needs SOLD properties (a few % of FOLIOs) and a handful of
+    # columns. Subsetting rows + columns first avoids copying/merging the full
+    # multi-million-row fulfillment export, which pandas consolidates into a giant
+    # object array (shape n_obj_cols × n_rows) and OOMs at scale. Per methodology,
+    # LAST SALE DATE + MFR come from the domain — they are intentionally excluded
+    # from the kept columns, which also avoids an _x/_y merge collision.
+    _keep = ["FOLIO", "Month", "COUNTY", "OWNER TYPE"] + list(gen.SIGNAL_COLS)
+    _keep = [c for c in dict.fromkeys(_keep) if c in ff.columns]
+    _ff_folio = ff["FOLIO"].astype(str).str.strip().str.upper()
+    ff = ff.loc[_ff_folio.isin(sold_folios), _keep].copy()
+    ff["FOLIO"] = ff["FOLIO"].astype(str).str.strip().str.upper()
+    ff["PERIOD"] = ff["Month"].astype(str).str.strip()  # 'Month' is the YYYY-MM filename prefix
 
     df = ff.merge(sales, on="FOLIO", how="left")
     df["LAST SALE DATE"] = pd.to_datetime(df["LAST SALE DATE"], errors="coerce")
@@ -152,7 +161,7 @@ def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
     return {
         "adf": adf,
         "available_signals": available_signals,
-        "total_rows": len(ff),
+        "total_rows": total_rows,
         "dov_total": dov_total,
         "dov_county": dov_county,
         "all_buybox_counties": all_buybox_counties,
@@ -167,7 +176,11 @@ def _build_overview(dom: pd.DataFrame) -> tuple[pd.Series, pd.DataFrame]:
     signals = analyze.STANDARD_SIGNALS
     absentee = analyze.ABSENTEE_COL
 
-    d = dom.copy()
+    # Copy only the columns the universe table needs — dom is ~1.4M rows, so a full
+    # .copy() consolidates a large object array unnecessarily.
+    _need = {"COUNTY", "BUYBOX SCORE", absentee, *signals}
+    _cols = [c for c in dom.columns if str(c).strip().upper() in _need]
+    d = dom[_cols].copy()
     d.columns = d.columns.str.strip().str.upper()
     d["BUYBOX SCORE"] = pd.to_numeric(d.get("BUYBOX SCORE", 0), errors="coerce").fillna(0)
     d = d[d["BUYBOX SCORE"] > 0]

@@ -31,6 +31,7 @@ from openpyxl.comments import Comment
 BASE              = Path(__file__).parent
 FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
+AUDIT_PATH        = BASE / "Fulfillment_Audit.xlsx"          # deduped one-row-per-FOLIO audit (fits Excel)
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
 MARKET_PATH       = BASE / "Market Deals" / "Market Deals Leverage.xlsx"
@@ -146,6 +147,37 @@ def count_by_action(series, mapping):
     mapped = series.dropna().map(mapping)
     counts = mapped.value_counts()
     return {c: int(counts.get(c, 0)) for c in ['30 day', '60 day', '90 day']}
+
+# ── Address / ZIP normalization ───────────────────────────────────────────────
+# Shared by (a) the domain dedup, so each fulfillment FOLIO resolves to the
+# property the client was RECOMMENDED, and (b) the market-deal address+ZIP match.
+# A single domain FOLIO can map to >1 physical address (~8% of domain); without
+# this, dedup-by-most-recent-sale can attribute a sale / market deal to a
+# different property than the one recommended.
+_SUFFIX_MAP = {
+    r'\bSTREET\b': 'ST',  r'\bAVENUE\b': 'AVE', r'\bROAD\b': 'RD',
+    r'\bBOULEVARD\b': 'BLVD', r'\bDRIVE\b': 'DR', r'\bLANE\b': 'LN',
+    r'\bCOURT\b': 'CT', r'\bCIRCLE\b': 'CIR', r'\bTRAIL\b': 'TRL',
+    r'\bPLACE\b': 'PL', r'\bPARKWAY\b': 'PKWY', r'\bHIGHWAY\b': 'HWY',
+    r'\bTERRACE\b': 'TER',
+}
+def _norm_addr(s):
+    if pd.isna(s): return None
+    s = re.sub(r'[.,#]', '', str(s).upper().strip())
+    for pat, rep in _SUFFIX_MAP.items():
+        s = re.sub(pat, rep, s)
+    return re.sub(r'\s+', ' ', s) or None
+def _norm_zip(z):
+    if pd.isna(z): return None
+    try:
+        z = str(int(float(str(z))))  # 7109.0 → "7109"
+    except (ValueError, OverflowError):
+        z = str(z)
+    s = re.sub(r'\D', '', z)[:5].zfill(5)
+    return s if len(s) == 5 else None
+def _addr_zip_key(a, z):
+    na, nz = _norm_addr(a), _norm_zip(z)
+    return f"{na}|{nz}" if na and nz else None
 
 def domain_distress_counts(df_sub):
     result = {dtype: 0 for dtype in distress_order}
@@ -507,11 +539,36 @@ dom['buybox_int']          = pd.to_numeric(dom['PROPERTY ID (BUYBOX)'], errors='
 # Dedupe by FOLIO — domain has ~167K duplicate FOLIO rows that would otherwise
 # inflate Column B / D / E counts. Keep the row with the most recent LAST SALE DATE
 # so newer sale info wins; NaT dates sort first so they're dropped when a real date exists.
+# ── Fulfillment-recommended address per FOLIO ────────────────────────────────
+# Resolve each fulfillment FOLIO to the property the client was RECOMMENDED so
+# that Sold (D) and Market Deals (E) reflect that property — not whichever address
+# under the same FOLIO happens to have sold most recently. Key = normalized
+# fulfillment ADDRESS+ZIP; most common value per FOLIO when months disagree.
+print("  Resolving fulfillment-recommended address per FOLIO...")
+_ff_ak = df[['FOLIO', 'ADDRESS', 'ZIP']].copy()
+_ff_ak['FOLIO'] = _ff_ak['FOLIO'].astype(str).str.strip()
+_ff_ak = _ff_ak.drop_duplicates()
+_ff_ak['_k'] = [_addr_zip_key(a, z) for a, z in zip(_ff_ak['ADDRESS'], _ff_ak['ZIP'])]
+ff_addr_key = (_ff_ak.dropna(subset=['_k'])
+               .groupby('FOLIO')['_k']
+               .agg(lambda s: s.value_counts().index[0]))
+print(f"    {len(ff_addr_key):,} FOLIOs with a recommended address key")
+
 _pre_dedupe = len(dom)
-dom = (dom.sort_values('LAST SALE DATE', na_position='first')
+# Prefer the domain row whose address matches the fulfillment-recommended address;
+# tie-break by most recent sale (NaT first). Falls back to most-recent-sale when
+# no domain row matches the recommended address (or FOLIO not in fulfillment).
+dom['_addr_key'] = [_addr_zip_key(a, z) for a, z in zip(dom['ADDRESS'], dom['ZIP'])]
+dom['_ff_match'] = (dom['_addr_key'] == dom['FOLIO'].astype(str).str.strip().map(ff_addr_key)).astype(int)
+dom = (dom.sort_values(['_ff_match', 'LAST SALE DATE'], na_position='first')
           .drop_duplicates('FOLIO', keep='last')
           .reset_index(drop=True))
-print(f"  After dedupe by FOLIO: {len(dom):,} rows ({_pre_dedupe - len(dom):,} dropped)")
+print(f"  After dedupe by FOLIO: {len(dom):,} rows ({_pre_dedupe - len(dom):,} dropped); "
+      f"{int(dom['_ff_match'].sum()):,} resolved to the recommended address")
+# Free the dedup scratch — the object _addr_key column on the full domain frame is
+# large, and the companion report later allocates against the full fulfillment df.
+dom = dom.drop(columns=['_addr_key', '_ff_match'])
+del _ff_ak
 
 # ── ABSENTEE (3-way) for Columns C / F / G — from FULFILLMENT ABSENTEE ────────
 # ABSENTEE is a 3-way classification (0 = owner-occupied, 1 = in-state absentee,
@@ -582,40 +639,17 @@ if 'PropertyID' in md.columns:
     print(f"  Match by PropertyID. Market deals: {len(md_ids):,} | Fulfillment-sold: {len(ff_sold_buybox_ids):,} | Overlap: {len(overlap_ids):,}")
     mkt_sold = sold[sold['buybox_int'].isin(overlap_ids)].copy()
 else:
-    # Fallback: market deals file has no PropertyID — match on normalized ADDRESS + ZIP.
-    _SUFFIX_MAP = {
-        r'\bSTREET\b': 'ST',  r'\bAVENUE\b': 'AVE', r'\bROAD\b': 'RD',
-        r'\bBOULEVARD\b': 'BLVD', r'\bDRIVE\b': 'DR', r'\bLANE\b': 'LN',
-        r'\bCOURT\b': 'CT', r'\bCIRCLE\b': 'CIR', r'\bTRAIL\b': 'TRL',
-        r'\bPLACE\b': 'PL', r'\bPARKWAY\b': 'PKWY', r'\bHIGHWAY\b': 'HWY',
-        r'\bTERRACE\b': 'TER',
-    }
-    def _norm_addr(s):
-        if pd.isna(s): return None
-        s = re.sub(r'[.,#]', '', str(s).upper().strip())
-        for pat, rep in _SUFFIX_MAP.items():
-            s = re.sub(pat, rep, s)
-        return re.sub(r'\s+', ' ', s) or None
-    def _norm_zip(z):
-        if pd.isna(z): return None
-        try:
-            z = str(int(float(str(z))))  # 7109.0 → "7109", 7036 → "7036"
-        except (ValueError, OverflowError):
-            z = str(z)
-        s = re.sub(r'\D', '', z)[:5].zfill(5)
-        return s if len(s) == 5 else None
-    def _key(a, z):
-        na, nz = _norm_addr(a), _norm_zip(z)
-        return f"{na}|{nz}" if na and nz else None
-
+    # Fallback: market deals file has no PropertyID — match on normalized ADDRESS + ZIP
+    # (module-level _addr_zip_key, the same key used by the domain dedup so a market
+    # deal is credited only to the property the client was actually recommended).
     md_cols = {c.lower(): c for c in md.columns}
     addr_col = md_cols.get('street address') or md_cols.get('address')
     zip_col  = md_cols.get('zip code')       or md_cols.get('zip')
     if not addr_col or not zip_col:
         raise KeyError(f"Market deals missing PropertyID and address/zip. Got: {list(md.columns)}")
 
-    md['_addr_key']   = [_key(a, z) for a, z in zip(md[addr_col], md[zip_col])]
-    sold['_addr_key'] = [_key(a, z) for a, z in zip(sold['ADDRESS'], sold['ZIP'])]
+    md['_addr_key']   = [_addr_zip_key(a, z) for a, z in zip(md[addr_col], md[zip_col])]
+    sold['_addr_key'] = [_addr_zip_key(a, z) for a, z in zip(sold['ADDRESS'], sold['ZIP'])]
     md_keys     = set(md['_addr_key'].dropna().unique())
     sold_keys   = set(sold['_addr_key'].dropna().unique())
     overlap_keys = md_keys & sold_keys
@@ -712,6 +746,14 @@ if len(df) > _EXCEL_ROW_LIMIT:
     print(f"  Fulfillment has {len(df):,} rows (> Excel limit) — saving as CSV...")
     df.to_csv(_csv_path, index=False)
     print(f"  Saved: {_csv_path.name}")
+    # Remove any stale .xlsx from a previous (smaller) run — leaving it on disk
+    # invites manual audits against outdated data, and opening the CSV directly in
+    # Excel silently truncates to the first ~1.05M rows. Use the CSV (full data) or
+    # the deduped Fulfillment_Audit.xlsx below for manual checks.
+    if COMPILED_PATH.exists():
+        COMPILED_PATH.unlink()
+        print(f"  Removed stale {COMPILED_PATH.name} (exceeds Excel's {_EXCEL_ROW_LIMIT:,}-row limit; "
+              f"use the CSV or {AUDIT_PATH.name})")
 else:
     print(f"  Saving Fulfillment_Compilation.xlsx with validation columns...")
     with pd.ExcelWriter(COMPILED_PATH, engine='xlsxwriter',
@@ -719,6 +761,56 @@ else:
                                                     'tmpdir': str(BASE)}}) as _writer:
         df.to_excel(_writer, index=False)
     print(f"  Saved: {COMPILED_PATH.name}")
+
+# ── Deduped per-FOLIO AUDIT file (one row per FOLIO, always fits Excel) ───────
+# The full compilation can exceed Excel's 1,048,576-row limit (→ saved as CSV),
+# and opening that CSV in Excel silently truncates it. This file collapses the
+# compilation to ONE row per FOLIO using the SAME per-FOLIO logic the report uses
+# (binary distress = MAX across months = "ever flagged"; scores = MAX; action
+# days = MIN), plus the Yes/No validation flags. Every B/C/D/E/F/G count then
+# reproduces here with a plain column filter — no de-duplication needed in Excel.
+print("\nBuilding deduped per-FOLIO audit file...")
+_audit_binary = [c for c in DOMAIN_DIST_MAP.keys() if c in df.columns]   # incl DEFAULT RISK
+for _c in _audit_binary + (['ABSENTEE'] if 'ABSENTEE' in df.columns else []):
+    df[_c] = pd.to_numeric(df[_c], errors='coerce')
+_audit_agg = {}
+for _c in ['ADDRESS', 'ZIP', 'COUNTY', 'LAST SALE DATE', 'LEAD DATE',
+           'APPOINTMENT DATE', 'PROPERTY STATUS', 'MARKET DEAL',
+           'CLIENT LEAD', 'CLIENT DEAL']:
+    if _c in df.columns:
+        _audit_agg[_c] = 'first'   # FOLIO-constant (mapped from per-FOLIO lookups)
+for _c in (['LIKELY DEAL SCORE', 'SCORE', 'BUYBOX SCORE', 'total_mkt',
+            'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'ABSENTEE'] + _audit_binary):
+    if _c in df.columns:
+        _audit_agg[_c] = 'max'     # "ever flagged" / strongest across the window
+if 'ACTION_DAYS' in df.columns:
+    _audit_agg['ACTION_DAYS'] = 'min'
+_audit_fk = df['FOLIO'].astype(str).str.strip().rename('FOLIO')
+audit = df.groupby(_audit_fk, sort=False).agg(_audit_agg).reset_index()
+# DEFAULT RISK in the report = (fulfillment DEFAULT RISK > 0) OR (FOLIO in domain
+# Default-Risk set). Overlay the domain set so the audit's DEFAULT RISK column
+# reproduces the report's Default Risk count exactly.
+if 'DEFAULT RISK' in audit.columns:
+    audit['DEFAULT RISK'] = audit['DEFAULT RISK'].fillna(0)
+    _in_dr = audit['FOLIO'].isin(dr_folios)
+    audit.loc[_in_dr & (audit['DEFAULT RISK'] <= 0), 'DEFAULT RISK'] = 1
+print(f"  Audit rows (unique FOLIO): {len(audit):,}")
+# Resilient write — if the audit file is open in Excel (lock), fall back to an
+# alternate name and warn, so a lock never aborts the main report below.
+_audit_targets = [AUDIT_PATH, AUDIT_PATH.with_name(AUDIT_PATH.stem + " (new).xlsx")]
+for _i, _target in enumerate(_audit_targets):
+    try:
+        with pd.ExcelWriter(_target, engine='xlsxwriter',
+                            engine_kwargs={'options': {'strings_to_urls': False,
+                                                        'tmpdir': str(BASE)}}) as _writer:
+            audit.to_excel(_writer, index=False)
+        print(f"  Saved: {_target.name}")
+        break
+    except PermissionError:
+        if _i + 1 < len(_audit_targets):
+            print(f"  [WARN] {_target.name} is locked (open in Excel?) — writing {_audit_targets[_i+1].name} instead")
+        else:
+            print(f"  [WARN] Could not write the audit file (locked): {_target.name}. Close it and re-run.")
 
 
 
@@ -1035,8 +1127,19 @@ def write_excel(path, rows, sheet_title):
         ws.column_dimensions[col_letter].width = 22
     ws.freeze_panes = 'A2'
 
-    wb.save(path)
-    print(f"  Saved: {path}")
+    # Resilient save — if the report is open in Excel (lock), fall back to an
+    # alternate name and warn rather than aborting after the heavy compute.
+    path = Path(path)
+    for _i, _target in enumerate([path, path.with_name(path.stem + " (new).xlsx")]):
+        try:
+            wb.save(_target)
+            print(f"  Saved: {_target}")
+            return
+        except PermissionError:
+            if _i == 0:
+                print(f"  [WARN] {path.name} is locked (open in Excel?) — saving '{path.stem} (new).xlsx' instead")
+            else:
+                print(f"  [WARN] Could not save the report (locked): {path.name}. Close it and re-run.")
 
 
 rows = build_rows(

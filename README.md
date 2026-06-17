@@ -111,7 +111,12 @@ This script does everything automatically:
 
 **Output:** `Leverage Companies - Distress Report - YYYY-MM.xlsx` (e.g. `Leverage Companies - Distress Report - 2026-06.xlsx`)
 
-A side audit file is also written each run: `Fulfillment_Compilation.xlsx` (saved as `.csv` when it exceeds Excel's row limit). The compilation contains every fulfillment row plus validation columns appended at the end so you can spot-check the report:
+Two audit files are written each run:
+
+- **`Fulfillment_Audit.xlsx`** — a **deduped, one-row-per-FOLIO** file (~434k rows, always fits Excel). **Use this for manual spot-checks**: every B/C/D/E/F/G count reproduces with a plain column filter, no de-duplication needed (distress flags are MAX-across-months = "ever flagged").
+- **`Fulfillment_Compilation.csv` / `.xlsx`** — the full per-FOLIO-month compilation. Saved as **`.csv`** when it exceeds Excel's 1,048,576-row limit (and any stale `.xlsx` is deleted). ⚠️ Do **not** open the CSV directly in Excel — it silently truncates to the first ~1.05M rows and your counts will be too low. Use `Fulfillment_Audit.xlsx`, or load the CSV in Power BI / pandas.
+
+The compilation contains every fulfillment row plus validation columns appended at the end so you can spot-check the report:
 
 | Validation column | What it shows | Validates |
 |---|---|---|
@@ -132,8 +137,8 @@ A side audit file is also written each run: `Fulfillment_Compilation.xlsx` (save
 |--------|-------------|
 | B | Total Properties — all domain properties with BUYBOX SCORE > 0 |
 | C | Properties in the fulfillment — MAX aggregated metrics across the actual fulfillment window |
-| D | Sold since start of fulfillment window — properties sold from the first month with a fulfillment file onward |
-| E | Market Deals — investor purchases that overlap with Column D (sold properties) |
+| D | Sold since start of fulfillment window — properties sold from the first month with a fulfillment file onward (sold status resolved on the property the client was *recommended*, not whichever address shares the FOLIO) |
+| E | Market Deals — investor purchases that overlap with Column D (sold properties), matched on the recommended address+ZIP |
 | F | Client Leads — leads, appointments, dead leads, and contracts matched to fulfillment, counted as **unique properties (FOLIO)** |
 | G | Client Deals — closed deals matched to fulfillment, counted as **unique properties (FOLIO)** |
 | H | Sold Concentration % — formula =D/C |
@@ -217,6 +222,8 @@ Claude Code will read the scripts, update the necessary variables, run the steps
 | `build_reports.py` | Legacy — Column C only; not used for main output |
 | `build_population.py` | Legacy — fulfillment audit file; not used for main output |
 | `build_deals_leads.py` | Legacy — Columns F and G only; not used for main output |
-| `Fulfillment_Compilation.xlsx` | Audit file written each run — all fulfillment rows combined, plus `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL` columns for validating D/F/G/E |
+| `Fulfillment_Audit.xlsx` | **Deduped one-row-per-FOLIO audit (~434k rows) — use this for manual checks**; every count reproduces with a plain filter |
+| `Fulfillment_Compilation.csv` / `.xlsx` | Full per-FOLIO-month audit file written each run, plus `LAST SALE DATE`, `PROPERTY STATUS`, `MARKET DEAL`, `CLIENT LEAD`, `CLIENT DEAL` validation columns. `.csv` when over Excel's row limit — don't open the CSV in Excel (truncates) |
 | `{CLIENT} - Distress Report - YYYY-MM.xlsx` | **Report output** |
+| `{CLIENT} - Fulfillment Distress Analysis - YYYY-MM.html` / `.pdf` | Companion Atlas-style report (auto-generated; N reconciles to Column D) |
 | `Domain Full Data/domain.parquet` | Cached domain — rebuilt by `compile_domain.py` |
