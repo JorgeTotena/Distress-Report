@@ -34,12 +34,12 @@ COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run f
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
 MARKET_PATH       = BASE / "Market Deals" / "Markeet Deals Leverage.xlsx"
-CLIENT_NAME       = "Pillar Home Buyers"
+CLIENT_NAME       = "Leverage Companies"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Pillar Home Buyers started doing business with 8020REI on ~2024-05-24
+# Leverage Companies started doing business with 8020REI on ~2024-05-24
 CLIENT_START_DATE = pd.to_datetime("2024-05-24")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
