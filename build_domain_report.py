@@ -33,7 +33,7 @@ FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Markeet Deals Leverage.xlsx"
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals Leverage.xlsx"
 CLIENT_NAME       = "Leverage Companies"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
@@ -220,6 +220,7 @@ _DOM_COLS_NEEDED = [
     'FOLIO', 'BUYBOX SCORE', 'LIKELY DEAL SCORE', 'SCORE',
     'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'ACTION PLANS',
     'LAST SALE DATE', 'MARKETING FIRST RECOMMENDATION', 'PROPERTY ID (BUYBOX)', 'ZIP', 'ADDRESS',
+    'COUNTY',  # needed by the companion's county-level Distress Universe page (_build_overview)
     'ABSENTEE', 'HIGH EQUITY', 'DOWNSIZING', 'PRE-FORECLOSURE', 'VACANT',
     '55+', 'ESTATE', 'INTER FAMILY TRANSFER', 'TAXES', 'PROBATE',
     'JUDGEMENT', 'LIENS CITY/COUNTY', 'LIENS OTHER', 'LIENS MECHANIC',
@@ -335,6 +336,14 @@ if not _dl_files:
 print(f"\nLoading Deals and Leads ({len(_dl_files)} file(s)): {[f.name for f in _dl_files]}")
 dl = pd.concat([pd.read_excel(f) for f in _dl_files], ignore_index=True)
 
+# ── Fix #1: drop fully-identical duplicate rows ──────────────────────────────
+# Some client exports (e.g. Leverage) repeat the exact same lead/deal row 2–4×.
+# The report counts rows, so these literal repeats inflate Columns F/G. Drop
+# them on load — a row identical across every column is never a distinct event.
+_pre_dl = len(dl)
+dl = dl.drop_duplicates().reset_index(drop=True)
+print(f"  Loaded {_pre_dl:,} rows; dropped {_pre_dl - len(dl):,} fully-identical duplicate rows -> {len(dl):,}")
+
 _dl_has_folio  = 'FOLIO' in dl.columns
 _dl_has_status = 'PROPERTY STATUS' in dl.columns
 if not _dl_has_folio or not _dl_has_status:
@@ -433,6 +442,16 @@ def compute_col_counts(sub_df):
 
 leads_ff = dl[(dl['PROPERTY STATUS'] == 'Lead') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
 deals_ff = dl[(dl['PROPERTY STATUS'] == 'Deal') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
+# ── Fix #2: count Columns F/G by unique property (FOLIO) ─────────────────────
+# Consistent with B/C/D/E, which are all per-property. A property with several
+# lead events (e.g. a Lead later marked Dead Lead) is one property, not several.
+# In the Fulfillment source every row of a FOLIO resolves to identical values
+# (scores/action/mkt/distress come from ff_agg per FOLIO), so keeping one row
+# per FOLIO is lossless and makes EVERY F/G sub-count — incl. Distress — property-based.
+_F_rows, _G_rows = len(leads_ff), len(deals_ff)
+leads_ff = leads_ff.drop_duplicates('FOLIO_key')
+deals_ff = deals_ff.drop_duplicates('FOLIO_key')
+print(f"  F/G deduped to unique property — Leads: {_F_rows:,} -> {len(leads_ff):,} | Deals: {_G_rows:,} -> {len(deals_ff):,}")
 F_likely, F_score, F_action, F_mkt, F_dist = compute_col_counts(leads_ff)
 G_likely, G_score, G_action, G_mkt, G_dist = compute_col_counts(deals_ff)
 print(f"  Columns F/G ready — Leads: {len(leads_ff)} | Deals: {len(deals_ff)}")
@@ -643,6 +662,24 @@ _dl_status = (dl[['FOLIO_key', 'PROPERTY STATUS']]
               .drop_duplicates('FOLIO_key', keep='last')
               .set_index('FOLIO_key')['PROPERTY STATUS'])
 
+# Lead / Appointment creation dates per FOLIO — lets Power BI reproduce the
+# window date filter the report applies to Columns F/G (a lead/deal is kept only
+# if its creation date >= the fulfillment-window start). Earliest date per FOLIO
+# (first time the property became a lead/appointment). Sourced from the already
+# window-filtered dl, so dates here are consistent with the report's F/G counts.
+def _folio_first_date(col):
+    if col not in dl.columns or len(dl) == 0:
+        return pd.Series(dtype='datetime64[ns]')
+    _d = pd.to_datetime(dl[col], errors='coerce')
+    return (pd.DataFrame({'FOLIO_key': dl['FOLIO_key'], '_d': _d})
+            .dropna(subset=['FOLIO_key', '_d'])
+            .sort_values('_d')
+            .drop_duplicates('FOLIO_key', keep='first')
+            .set_index('FOLIO_key')['_d'])
+
+_lead_date_map = _folio_first_date('LEAD DATE')
+_appt_date_map = _folio_first_date('APPOINTMENT DATE')
+
 _mkt_folios = set(mkt_sold['FOLIO'].astype(str).str.strip().unique())
 
 # Client Lead / Client Deal flags — derived from the SAME populations the report
@@ -655,6 +692,8 @@ _deal_folios = set(deals_ff['FOLIO_key'].dropna().astype(str).str.strip().unique
 
 _df_folio_key = df['FOLIO'].astype(str).str.strip()
 df['LAST SALE DATE']  = _df_folio_key.map(_last_sale)
+df['LEAD DATE']        = _df_folio_key.map(_lead_date_map)
+df['APPOINTMENT DATE'] = _df_folio_key.map(_appt_date_map)
 df['PROPERTY STATUS'] = _df_folio_key.map(_dl_status).fillna('')
 df['MARKET DEAL']     = np.where(_df_folio_key.isin(_mkt_folios), 'Yes', 'No')
 df['CLIENT LEAD']     = np.where(_df_folio_key.isin(_lead_folios), 'Yes', 'No')
