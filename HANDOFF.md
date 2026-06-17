@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-06-16 — Leverage Companies; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
+**Last updated:** 2026-06-17 — Leverage Companies; Columns F/G now count unique property (FOLIO) + exact-row dedup of the leads file; COUNTY restored to domain (companion fix); LEAD DATE / APPOINTMENT DATE added to compilation; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -40,8 +40,12 @@ All fulfillment files in `Fulfillments/` compiled into one dataset.
 - Property identifier: `FOLIO`
 - **Validation columns appended at end of STEP 5** (used to spot-check the report):
   - `LAST SALE DATE` — most recent sale per FOLIO from domain → validates Column D
+  - `LEAD DATE` — earliest (creation) lead date per FOLIO from the window-filtered leads → lets Power BI reproduce the F window date filter
+  - `APPOINTMENT DATE` — earliest appointment date per FOLIO from the window-filtered leads
   - `PROPERTY STATUS` — `Lead` / `Deal` from deals/leads file (Deal wins if both) → validates F/G
   - `MARKET DEAL` — `Yes`/`No` flag from market-deals overlap → validates Column E
+  - `CLIENT LEAD` / `CLIENT DEAL` — `Yes`/`No`; unique-FOLIO membership of Columns F / G (these now equal the report's F/G totals — see Fix 9)
+  - **Caveat:** leads with a blank `LEAD DATE` are kept (can't be ruled out of the window), so a FOLIO can show `CLIENT LEAD=Yes` with a blank `LEAD DATE`. Dropping blank-dated leads in Power BI undercounts vs. the report.
 - The save is wrapped with `engine_kwargs={'options': {'strings_to_urls': False, 'tmpdir': str(BASE)}}` because (a) fulfillment data has >65,530 property URLs (Excel's per-sheet hyperlink limit) and (b) the dev machine's `C:` drive is often full, so xlsxwriter's temp files must go on the project drive.
 
 ---
@@ -61,14 +65,14 @@ All fulfillment files in `Fulfillments/` compiled into one dataset.
 ### Step 3 — Domain Compilation
 **Script:** `compile_domain.py`
 **Output:** `Domain Full Data/domain.parquet`
-Reads all xlsx **or csv** parts in `Domain Full Data/` and saves a trimmed parquet (only the ~27 columns in `_DOM_COLS_NEEDED`). Re-run whenever domain files change.
+Reads all xlsx **or csv** parts in `Domain Full Data/` and saves a trimmed parquet (only the ~28 columns in `_DOM_COLS_NEEDED`). Re-run whenever domain files change. **`COUNTY` is included** — the companion's county-level Distress Universe page needs it (omitting it silently breaks the companion; see Fix 10). If you add a column to `_DOM_COLS_NEEDED`, delete `domain.parquet` so it rebuilds from the CSVs.
 
 **Current domain:** 4 CSV parts — `COO config_1.6M_386_part_1.csv` through `_part_4.csv`
 - ~2,581,394 rows, ~1,444,626 unique FOLIOs (1,444,627 after dedupe)
 - 348,735 properties with BUYBOX SCORE > 0
 - Contains `DEFAULT RISK` column (681,352 FOLIOs flagged)
 
-**Column filtering:** Both `compile_domain.py` and `build_domain_report.py` share `_DOM_COLS_NEEDED` — only those ~27 columns are loaded/cached. Add any new field to both files and re-run `compile_domain.py`.
+**Column filtering:** Both `compile_domain.py` and `build_domain_report.py` share `_DOM_COLS_NEEDED` — only those ~28 columns are loaded/cached. Add any new field to both files and re-run `compile_domain.py`.
 
 **Note:** Some older domain exports omit `DEFAULT RISK`. The script handles this gracefully — if the column is missing, Default Risk counts will be 0 and a warning is printed. No crash.
 
@@ -78,16 +82,22 @@ Reads all xlsx **or csv** parts in `Domain Full Data/` and saves a trimmed parqu
 **Script:** `build_domain_report.py` (inline, STEP 2)
 **Source:** Any `.xlsx` in `Documents/` whose filename contains "leads" or "deals" (case-insensitive).
 
+**Exact-row dedup on load (Fix 9a):** immediately after loading the file, fully-identical duplicate rows are dropped (`dl.drop_duplicates()`). Some client exports repeat the same lead/deal row 2–4× (Leverage had ~9.6k); the report counts rows, so these literal repeats would inflate F/G. Clean files are unaffected.
+
+**Date filter — from `WINDOW_START`, not `CLIENT_START_DATE`:** leads/deals are filtered to the **start of the fulfillment window** (`LEADS_DEALS_SINCE = WINDOW_START`, e.g. 2025-01-01), so F/G align with Column D. `CLIENT_START_DATE` is informational only.
+
 **Status types handled:**
-- `Lead` → filtered by `LEAD DATE >= CLIENT_START_DATE (2023-09-26)` → counted as Lead (Column F). **Blank LEAD DATE → included**
-- `Appointment` → filtered by `APPOINTMENT DATE >= CLIENT_START_DATE` → reclassified as Lead (Column F). **Blank APPOINTMENT DATE → included**
-- `Dead Lead` → filtered by `LEAD DATE >= CLIENT_START_DATE` → reclassified as Lead (Column F). **Blank LEAD DATE → included**
+- `Lead` → filtered by `LEAD DATE >= WINDOW_START` → counted as Lead (Column F). **Blank LEAD DATE → included**
+- `Appointment` → filtered by `APPOINTMENT DATE >= WINDOW_START` → reclassified as Lead (Column F). **Blank APPOINTMENT DATE → included**
+- `Dead Lead` → filtered by `LEAD DATE >= WINDOW_START` → reclassified as Lead (Column F). **Blank LEAD DATE → included**
 - `Contract` → uses `LEAD DATE` if available → reclassified as Lead (Column F). **Blank LEAD DATE → included**
-- `Deal` → filtered by `LAST SALE DATE >= CLIENT_START_DATE` → counted as Deal (Column G). Must have a valid date.
+- `Deal` → filtered by `LAST SALE DATE >= WINDOW_START` → counted as Deal (Column G). Must have a valid date.
 
 **Data resolution logic:**
 1. **Primary:** Join on `FOLIO` to fulfillment → use MAX values → `Data_Source = "Fulfillment"`
 2. **Fallback:** Use values directly from file → `Data_Source = "Deals and Leads Atlas"` (excluded from Column F/G — only fulfillment-matched rows go into the report)
+
+**Counting grain — unique property (Fix 9b):** `leads_ff` / `deals_ff` are deduped by `FOLIO_key` before counting, so Columns F/G count **unique properties**, consistent with B/C/D/E (and making the `F/C` / `G/C` concentration ratios valid). In the Fulfillment source every row of a FOLIO resolves to identical values, so the dedup is lossless and propagates to every F/G sub-count, **including the Distress section**.
 
 ---
 
@@ -105,8 +115,8 @@ All data columns populated:
 | C | Properties in the fulfillment | Fulfillment MAX | 434,462 |
 | D | Sold since Jan 1 2025 | Domain LAST SALE DATE ≥ Jan 1 2025, in fulfillment | 20,044 |
 | E | Market Deals | Properties bought at a significant discount and resold for profit in a short period — overlap of Market Deals file ∩ fulfillment-sold (join on PropertyID = BUYBOX ID) | 938 |
-| F | Clients Lead | Fulfillment-matched leads + appointments (>= 2025-01-01) | 22,282 |
-| G | Client Deals | Fulfillment-matched deals (>= 2025-01-01) | 48 |
+| F | Clients Lead | Fulfillment-matched leads + appointments (>= 2025-01-01), **unique property (FOLIO)** | 22,282 |
+| G | Client Deals | Fulfillment-matched deals (>= 2025-01-01), **unique property (FOLIO)** | 48 |
 | H | Sold Concentration % | Formula: =D/C | — |
 | I | Sold to Investors Concentration | Formula: =E/C | — |
 | J | Client Deals Concentration | Formula: =G/C | — |
@@ -114,7 +124,7 @@ All data columns populated:
 
 **Domain file:** Loaded from `Domain Full Data/domain.parquet` (cached from 4 CSV parts via `compile_domain.py`).
 **Default Risk:** Direct column in the domain file (`DEFAULT RISK`); gracefully handled if absent.
-**Market Deals:** `Market Deals/Markeet Deals Leverage.xlsx` — join via `PropertyID` → `PROPERTY ID (BUYBOX)`.
+**Market Deals:** `Market Deals/Market Deals Leverage.xlsx` — this file has no `PropertyID`, so the script falls back to a normalized `ADDRESS + ZIP` join (see Column E logic). Files that do carry `PropertyID` join via `PropertyID` → `PROPERTY ID (BUYBOX)`.
 
 ---
 
@@ -128,8 +138,8 @@ All data columns populated:
 | C (Fulfillment) | `dist_long` built from fulfillment binary columns + Default Risk (FOLIO cross-ref) |
 | D (Sold) | `fulfillment_distress_counts(sold, dist_long)` — same source as C, restricted to sold ∩ fulfillment FOLIOs |
 | E (Market Deals) | `fulfillment_distress_counts(mkt_sold, dist_long)` — same source as C, restricted to market-deal-overlap |
-| F (Client Leads) | `ff_distress_map` — same source as C (fulfillment binary columns) |
-| G (Client Deals) | Same as F |
+| F (Client Leads) | `ff_distress_map` — same source as C (fulfillment binary columns); counted on the FOLIO-deduped `leads_ff`, so per-property |
+| G (Client Deals) | Same as F (per-property, on FOLIO-deduped `deals_ff`) |
 
 **Owner Occupied for C/F/G:** Derived by joining fulfillment/leads/deals FOLIOs against domain ABSENTEE column (ABSENTEE == 0).
 
@@ -225,6 +235,24 @@ All data columns populated:
 - Column B is intentionally untouched — its rows are mostly *not* in fulfillment, so `domain_distress_counts(dom_b)` is the only viable source.
 **Verified:** Pre-foreclosure now reads C=4,487 / D=350 / E=20 / F=18 / G=1, matching manual audits on the fulfillment file.
 
+### Fix 9 — Columns F/G grain: exact-row dedup + count by unique property
+**Location:** `build_domain_report.py` — STEP 2 (after `dl` load, and after `leads_ff`/`deals_ff` are built)
+**Symptom:** Client's Power BI (deduped by property) showed Col F = 22,282 / Col G = 48; the report showed **26,534 / 59**. B/C/D/E/Market-Deals all reconciled — only F/G were off.
+**Root cause (two-fold):**
+- The Leverage `Deals and Leads` export contained **9,617 fully-identical duplicate rows** (the same lead repeated 2–4×). The report counts rows, so the dupes passed straight through.
+- Even without dupes, F/G counted lead/deal **events** (rows), while B/C/D/E count **unique properties** — so a property with several legitimate lead events was counted several times. This also broke the `F/C` and `G/C` concentration ratios (event ÷ property). The behavior was latent in every client; it only surfaced for Leverage (dirty export + a property-level audit). Earlier clients reconciled because their files had ~one row per lead.
+**Fix:**
+- **9a** — drop fully-identical rows on load: `dl = dl.drop_duplicates()`.
+- **9b** — dedupe `leads_ff` / `deals_ff` by `FOLIO_key` before `compute_col_counts`. Lossless (Fulfillment-source rows of a FOLIO resolve to identical values) and makes every F/G sub-count, incl. Distress, per-property.
+**Verified:** Col F 26,534 → **22,282**, Col G 59 → **48** (matches client PBI). Distress binary F/G counts dropped accordingly (e.g. High Equity F 24,294 → 20,526); the 3-way Absentee split was already per-property and now sums **exactly** to the F/G column totals (15,406 + 6,125 + 751 = 22,282; 30 + 14 + 4 = 48).
+
+### Fix 10 — COUNTY restored to the domain (companion HTML/PDF)
+**Location:** `build_domain_report.py` — `_DOM_COLS_NEEDED`
+**Symptom:** Companion "Fulfillment Distress Analysis" silently failed (`KeyError: 'COUNTY'`, caught by try/except) — the `.html`/`.pdf` on disk were stale.
+**Root cause:** the earlier column-filtered-parquet perf change dropped `COUNTY` from `_DOM_COLS_NEEDED`, but the companion's `_build_overview()` groups the Distress Universe by `COUNTY`.
+**Fix:** add `COUNTY` back to `_DOM_COLS_NEEDED`, delete `domain.parquet`, and re-run so the parquet rebuilds with COUNTY (now 28 columns).
+**Verified:** companion HTML + PDF regenerate; headline "matched sold properties" = 20,044 = Column D; 8 counties.
+
 ---
 
 ## Open / Decided Issues
@@ -245,6 +273,8 @@ All data columns populated:
 | Blank lead/appointment dates | ✅ Implemented | Lead-type statuses with no date are included |
 | Domain duplicate FOLIOs inflating B/D/E | ✅ Fixed | Dedupe after load, keep row with most recent LAST SALE DATE |
 | Pre-foreclosure (and other binary distresses) undercounted in C/D/E/F/G | ✅ Fixed | Read binary distress from fulfillment, not MAIN DISTRESS #1-4 ranking nor domain |
+| Columns F/G inflated vs client PBI (duplicate rows + event-vs-property grain) | ✅ Fixed | Drop exact-dup rows on load + dedupe leads_ff/deals_ff by FOLIO → F/G per-property (Fix 9) |
+| Companion HTML/PDF silently failing (KeyError COUNTY) | ✅ Fixed | Restore COUNTY to `_DOM_COLS_NEEDED`, rebuild parquet (Fix 10) |
 
 ---
 
@@ -276,7 +306,7 @@ All data columns populated:
 | Client name | Leverage Companies |
 | Start date with 8020REI | **2024-05-24** |
 | Deals/Leads file | `Documents/Deals and Leads Leverage Companies.xlsx` (auto-discovered by name pattern) |
-| Market Deals file | `Market Deals/Markeet Deals Leverage.xlsx` |
+| Market Deals file | `Market Deals/Market Deals Leverage.xlsx` (no PropertyID → address+ZIP fallback) |
 | Domain source | 4 CSV parts in `Domain Full Data/` (COO config_1.6M_386_part_1–4.csv) |
 | Fulfillment window | Jan 2025 – Mar 2026 (31 xlsx files) |
 | Excel sections | Distress only (ZIP section removed at client request) |

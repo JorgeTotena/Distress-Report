@@ -56,7 +56,7 @@ At the top of `build_domain_report.py`, set three variables before each client r
 ```python
 CLIENT_NAME       = "Leverage Companies"           # Used in the output filename
 CLIENT_START_DATE = pd.to_datetime("2024-05-24")   # When the client started with 8020REI
-MARKET_PATH       = BASE / "Market Deals" / "Markeet Deals Leverage.xlsx"  # Path to market deals file
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals Leverage.xlsx"  # Path to market deals file
 ```
 
 These are the only values that change between clients.
@@ -104,20 +104,25 @@ This script does everything automatically:
 - Uses every `.xlsx` in `Fulfillments/` as the analysis window (folder defines the window)
 - Compiles all fulfillment files — caches each as a `.parquet` sidecar on first run; subsequent runs load from parquet (much faster)
 - Loads the domain parquet (column-filtered for speed)
-- Loads the deals & leads file
+- Loads the deals & leads file (drops fully-identical duplicate rows on load; counts F/G per unique property)
 - Loads the market deals file
 - Builds all columns (B through G) with distress metrics and score buckets
 - Writes the final formatted Excel report
 
 **Output:** `Leverage Companies - Distress Report - YYYY-MM.xlsx` (e.g. `Leverage Companies - Distress Report - 2026-06.xlsx`)
 
-A side audit file is also written each run: `Fulfillment_Compilation.xlsx`. The compilation contains every fulfillment row plus three validation columns appended at the end so you can spot-check the report:
+A side audit file is also written each run: `Fulfillment_Compilation.xlsx` (saved as `.csv` when it exceeds Excel's row limit). The compilation contains every fulfillment row plus validation columns appended at the end so you can spot-check the report:
 
 | Validation column | What it shows | Validates |
 |---|---|---|
 | `LAST SALE DATE` | Most recent sale per FOLIO from the domain | Column D (Sold) |
+| `LEAD DATE` | Earliest (creation) lead date per FOLIO from the window-filtered leads | Column F window filter |
+| `APPOINTMENT DATE` | Earliest appointment date per FOLIO from the window-filtered leads | Column F |
 | `PROPERTY STATUS` | `Lead` or `Deal` from the deals/leads file (Deal wins if both); blank if no match | Columns F / G |
 | `MARKET DEAL` | `Yes` if the FOLIO is in the Market Deals overlap, else `No` | Column E |
+| `CLIENT LEAD` / `CLIENT DEAL` | `Yes` if the FOLIO is in the report's Column F / G population (unique-property membership = report F/G totals) | Columns F / G |
+
+**Note:** leads with a blank `LEAD DATE` are kept (can't be ruled out of the window), so a FOLIO can show `CLIENT LEAD=Yes` with no `LEAD DATE`. Dropping blank-dated leads downstream (e.g. in Power BI) undercounts vs. the report.
 
 ---
 
@@ -129,8 +134,8 @@ A side audit file is also written each run: `Fulfillment_Compilation.xlsx`. The 
 | C | Properties in the fulfillment — MAX aggregated metrics across the actual fulfillment window |
 | D | Sold since start of fulfillment window — properties sold from the first month with a fulfillment file onward |
 | E | Market Deals — investor purchases that overlap with Column D (sold properties) |
-| F | Client Leads — leads, appointments, dead leads, and contracts matched to fulfillment |
-| G | Client Deals — closed deals matched to fulfillment |
+| F | Client Leads — leads, appointments, dead leads, and contracts matched to fulfillment, counted as **unique properties (FOLIO)** |
+| G | Client Deals — closed deals matched to fulfillment, counted as **unique properties (FOLIO)** |
 | H | Sold Concentration % — formula =D/C |
 | I | Sold to Investors Concentration — formula =E/C |
 | J | Client Deals Concentration — formula =G/C |
