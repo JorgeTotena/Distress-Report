@@ -33,7 +33,7 @@ FULFILLMENTS_DIR  = BASE / "Fulfillments"
 COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run for audit
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Market Deals Pillar Home Buyers.xlsx"
+MARKET_PATH       = BASE / "Market Deals" / "Markeet Deals Leverage.xlsx"
 CLIENT_NAME       = "Pillar Home Buyers"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
@@ -42,6 +42,10 @@ OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.tod
 # Pillar Home Buyers started doing business with 8020REI on ~2024-05-24
 CLIENT_START_DATE = pd.to_datetime("2024-05-24")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
+
+# ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────
+# Leave False for the standard full report (all five sections).
+DISTRESS_AND_ZIP_ONLY = False
 
 # ── Analysis window ──────────────────────────────────────────────────────────
 # The window is defined entirely by the files present in Fulfillments/.
@@ -91,8 +95,7 @@ COLS = [
     'Sold Concentration %Sold', 'Sold to investors concentration',
     'Client Deals Concentration', 'Client Leads Concentration',
 ]
-ZIP_SECTION_TITLE = 'ZIP Code — most Client Deals first (BUYBOX SCORE > 0)'
-SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress', ZIP_SECTION_TITLE}
+SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress'}
 
 # ── Default Risk lookup — derived from domain (DEFAULT RISK column) ───────────
 # Loaded early so dr_folios is available for fulfillment injection (STEP 1)
@@ -110,15 +113,22 @@ if _parquet_early.exists():
     else:
         print("  DEFAULT RISK column not in domain file — Default Risk counts will be 0")
 else:
-    _xlsx = sorted(f for f in DOMAIN_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
-    _sample = pd.read_excel(_xlsx[0], nrows=0)
-    if 'DEFAULT RISK' in _sample.columns:
-        _dr = pd.concat([pd.read_excel(f, usecols=['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK']) for f in _xlsx], ignore_index=True)
+    _dom_src = (sorted(f for f in DOMAIN_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
+                or sorted(DOMAIN_DIR.glob("*.csv")))
+    _sample_cols = (pd.read_excel(_dom_src[0], nrows=0).columns if _dom_src[0].suffix == '.xlsx'
+                    else pd.read_csv(_dom_src[0], nrows=0).columns)
+    if 'DEFAULT RISK' in _sample_cols:
+        _dr_parts = []
+        for _f in _dom_src:
+            _cols = ['PROPERTY ID (BUYBOX)', 'FOLIO', 'DEFAULT RISK']
+            _dr_parts.append(pd.read_excel(_f, usecols=_cols) if _f.suffix == '.xlsx'
+                             else pd.read_csv(_f, usecols=_cols, low_memory=False))
+        _dr = pd.concat(_dr_parts, ignore_index=True)
         _dr_risk = _dr[pd.to_numeric(_dr['DEFAULT RISK'], errors='coerce').fillna(0) > 0]
         dr_folios = set(_dr_risk['FOLIO'].dropna().astype(str).str.strip().unique())
-        del _dr, _dr_risk
+        del _dr, _dr_risk, _dr_parts
     else:
-        print("  DEFAULT RISK column not in domain xlsx files — Default Risk counts will be 0")
+        print("  DEFAULT RISK column not in domain files — Default Risk counts will be 0")
 print(f"  {len(dr_folios):,} unique FOLIOs with Default Risk")
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -196,14 +206,42 @@ SOLD_SINCE   = WINDOW_START   # Column D cutoff — first day of the earliest fu
 print(f"  Window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
       f"({len(_ff_months)} month(s), {len(_ff_files)} file(s))")
 
+_FF_COLS_NEEDED = {
+    'FOLIO', 'ADDRESS', 'ZIP', 'COUNTY',
+    'ACTION PLANS', 'SCORE', 'LIKELY DEAL SCORE', 'BUYBOX SCORE',
+    'ABSENTEE', 'HIGH EQUITY', 'DOWNSIZING', 'PRE-FORECLOSURE', 'VACANT',
+    '55+', 'ESTATE', 'INTER FAMILY TRANSFER', 'TAXES', 'PROBATE',
+    'JUDGEMENT', 'LIENS CITY/COUNTY', 'LIENS OTHER', 'LIENS MECHANIC',
+    'DEFAULT RISK', 'MARKETING DM COUNT', 'MARKETING SMS COUNT',
+    'PROPERTY ID (BUYBOX)',
+}
+
+_DOM_COLS_NEEDED = [
+    'FOLIO', 'BUYBOX SCORE', 'LIKELY DEAL SCORE', 'SCORE',
+    'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'ACTION PLANS',
+    'LAST SALE DATE', 'MARKETING FIRST RECOMMENDATION', 'PROPERTY ID (BUYBOX)', 'ZIP', 'ADDRESS',
+    'ABSENTEE', 'HIGH EQUITY', 'DOWNSIZING', 'PRE-FORECLOSURE', 'VACANT',
+    '55+', 'ESTATE', 'INTER FAMILY TRANSFER', 'TAXES', 'PROBATE',
+    'JUDGEMENT', 'LIENS CITY/COUNTY', 'LIENS OTHER', 'LIENS MECHANIC',
+    'DEFAULT RISK',
+]
+
 _parts = []
 for _f in _ff_files:
-    _part = pd.read_excel(_f)
-    _part['Month']              = _f.name[:7]   # YYYY-MM from filename prefix
-    _part['Marketing_Channel']  = 'DM' if 'Direct Mail' in _f.name else ('SMS' if 'SMS' in _f.name else 'Other')
-    _part['Source_File']        = _f.name
+    _pq_cache = _f.with_suffix('.parquet')
+    if _pq_cache.exists() and _pq_cache.stat().st_mtime >= _f.stat().st_mtime:
+        _part = pd.read_parquet(_pq_cache)
+        print(f"  {_f.name}: {len(_part):,} rows (parquet cache)")
+    else:
+        _all_cols = pd.read_excel(_f, nrows=0).columns.tolist()
+        _use = [c for c in _all_cols if c in _FF_COLS_NEEDED]
+        _part = pd.read_excel(_f, usecols=_use)
+        _part['Month']             = _f.name[:7]
+        _part['Marketing_Channel'] = 'DM' if 'Direct Mail' in _f.name else ('SMS' if 'SMS' in _f.name else 'Other')
+        _part['Source_File']       = _f.name
+        _part.to_parquet(_pq_cache, index=False)
+        print(f"  {_f.name}: {len(_part):,} rows (saved parquet cache)")
     _parts.append(_part)
-    print(f"  {_f.name}: {len(_part):,} rows")
 
 df = pd.concat(_parts, ignore_index=True)
 print(f"  Total: {len(df):,} rows, {df['FOLIO'].nunique():,} unique FOLIOs")
@@ -296,52 +334,42 @@ if not _dl_files:
     raise FileNotFoundError(f"No leads/deals file found in {DOCS_DIR}")
 print(f"\nLoading Deals and Leads ({len(_dl_files)} file(s)): {[f.name for f in _dl_files]}")
 dl = pd.concat([pd.read_excel(f) for f in _dl_files], ignore_index=True)
-dl['LIKELY DEAL SCORE']   = pd.to_numeric(dl['LIKELY DEAL SCORE'],   errors='coerce')
-dl['SCORE']               = pd.to_numeric(dl['SCORE'],               errors='coerce')
-for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
-    dl[_col] = pd.to_numeric(dl[_col] if _col in dl.columns else 0, errors='coerce').fillna(0)
-dl['dl_days'] = dl['ACTION PLANS'].apply(extract_days)
-dl['dl_mkt']  = dl['MARKETING DM COUNT'] + dl['MARKETING SMS COUNT']
-dl['FOLIO_key'] = dl['FOLIO'].astype(str).str.strip()
-dl.loc[dl['FOLIO_key'] == 'nan', 'FOLIO_key'] = np.nan
 
-# ── Filter leads/deals to on or after the START OF THE FULFILLMENT WINDOW ─────
-# Attribution rule: a lead/deal can only be credited to this fulfillment if it
-# occurred during the analysis window or after it (the latter captures the data-
-# validation lag — deals that mature after WINDOW_END). Anything dated before the
-# window predates the recommendation and cannot be its result, so it is excluded.
-# This aligns F/G with Column D, which already uses SOLD_SINCE = WINDOW_START.
-# (CLIENT_START_DATE is retained above for documentation; it is no longer the cutoff.)
-LEADS_DEALS_SINCE = WINDOW_START
-# Date filter per status:
-#   Lead        → LEAD DATE        (blank date → included, can't rule it out)
-#   Appointment → APPOINTMENT DATE (blank date → included; counted as Lead in report)
-#   Dead Lead   → LEAD DATE        (blank date → included; counted as Lead in report)
-#   Contract    → LEAD DATE (if available; blank date → included; counted as Lead in report)
-#   Deal        → LAST SALE DATE   (must have a valid date)
-print(f"  Rows before date filter: {len(dl):,}")
-dl['_date_col'] = pd.NaT
-dl.loc[dl['PROPERTY STATUS'] == 'Lead',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Lead',        'LEAD DATE'],        errors='coerce')
-dl.loc[dl['PROPERTY STATUS'] == 'Appointment', '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'APPOINTMENT DATE'], errors='coerce')
-dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   'LEAD DATE'],        errors='coerce')
-dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Contract',    'LEAD DATE'],        errors='coerce')
-dl.loc[dl['PROPERTY STATUS'] == 'Deal',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Deal',        'LAST SALE DATE'],   errors='coerce')
-# Contracts use LEAD DATE if available; blank → included as lead (uncertain, can't rule out)
+_dl_has_folio  = 'FOLIO' in dl.columns
+_dl_has_status = 'PROPERTY STATUS' in dl.columns
+if not _dl_has_folio or not _dl_has_status:
+    print(f"  [WARN] Deals and Leads file missing required columns (FOLIO={_dl_has_folio}, PROPERTY STATUS={_dl_has_status}). Columns F and G will be 0.")
+    dl = pd.DataFrame(columns=['FOLIO_key', 'PROPERTY STATUS', 'LIKELY DEAL SCORE', 'SCORE',
+                                'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'dl_days', 'dl_mkt',
+                                'Data_Source'])
+else:
+    for _col in ['LIKELY DEAL SCORE', 'SCORE']:
+        dl[_col] = pd.to_numeric(dl[_col] if _col in dl.columns else np.nan, errors='coerce')
+    for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
+        dl[_col] = pd.to_numeric(dl[_col] if _col in dl.columns else 0, errors='coerce').fillna(0)
+    dl['dl_days'] = dl['ACTION PLANS'].apply(extract_days) if 'ACTION PLANS' in dl.columns else 0
+    dl['dl_mkt']  = dl['MARKETING DM COUNT'] + dl['MARKETING SMS COUNT']
+    dl['FOLIO_key'] = dl['FOLIO'].astype(str).str.strip()
+    dl.loc[dl['FOLIO_key'] == 'nan', 'FOLIO_key'] = np.nan
 
-# Lead-type statuses: include if date >= LEADS_DEALS_SINCE OR date is blank (uncertain, can't rule out)
-# Deals: must have a valid LAST SALE DATE >= LEADS_DEALS_SINCE
-_lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
-_keep = (
-    (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= LEADS_DEALS_SINCE))) |
-    (~_lead_types & (dl['_date_col'] >= LEADS_DEALS_SINCE))
-)
-dl = dl[_keep].drop(columns=['_date_col'])
-
-# Appointments, Dead Leads, and Contracts counted as Leads in the final report
-dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
-
-print(f"  Rows after date filter (>= {LEADS_DEALS_SINCE.date()} = window start, blanks kept for leads): {len(dl):,}")
-print(f"    Leads (incl. appointments + dead leads): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
+    # ── Filter leads/deals to on or after the START OF THE FULFILLMENT WINDOW ───
+    LEADS_DEALS_SINCE = WINDOW_START
+    print(f"  Rows before date filter: {len(dl):,}")
+    dl['_date_col'] = pd.NaT
+    dl.loc[dl['PROPERTY STATUS'] == 'Lead',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Lead',        'LEAD DATE'],        errors='coerce')
+    dl.loc[dl['PROPERTY STATUS'] == 'Appointment', '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'APPOINTMENT DATE'], errors='coerce')
+    dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   'LEAD DATE'],        errors='coerce')
+    dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Contract',    'LEAD DATE'],        errors='coerce')
+    dl.loc[dl['PROPERTY STATUS'] == 'Deal',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Deal',        'LAST SALE DATE'],   errors='coerce')
+    _lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
+    _keep = (
+        (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= LEADS_DEALS_SINCE))) |
+        (~_lead_types & (dl['_date_col'] >= LEADS_DEALS_SINCE))
+    )
+    dl = dl[_keep].drop(columns=['_date_col'])
+    dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
+    print(f"  Rows after date filter (>= {LEADS_DEALS_SINCE.date()} = window start, blanks kept for leads): {len(dl):,}")
+    print(f"    Leads (incl. appointments + dead leads): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
 
 ff_for_join = ff_agg.reset_index().rename(columns={'FOLIO': 'FOLIO_key'})
 dl = dl.merge(ff_for_join, on='FOLIO_key', how='left')
@@ -386,21 +414,25 @@ def resolve_row(row):
             'r_distress':  get_binary_distress(row),
         })
 
-resolved = dl.apply(resolve_row, axis=1)
-dl = pd.concat([dl, resolved], axis=1)
+if len(dl) > 0:
+    resolved = dl.apply(resolve_row, axis=1)
+    dl = pd.concat([dl, resolved], axis=1)
+else:
+    for _c in ['Data_Source', 'r_likely', 'r_score', 'r_days', 'r_mkt', 'r_distress']:
+        dl[_c] = pd.Series(dtype=object)
 
 def compute_col_counts(sub_df):
-    likely_d = count_by_bin(sub_df['r_likely'], likely_bins, likely_labels)
-    score_d  = count_by_bin(sub_df['r_score'],  score_bins,  score_labels)
-    action_d = count_by_action(sub_df['r_days'], action_map)
-    mkt_d    = count_by_bin(sub_df['r_mkt'],    mkt_bins,   mkt_labels)
+    likely_d = count_by_bin(sub_df['r_likely'], likely_bins, likely_labels) if 'r_likely' in sub_df.columns and len(sub_df) > 0 else {l: 0 for l in likely_labels}
+    score_d  = count_by_bin(sub_df['r_score'],  score_bins,  score_labels)  if 'r_score'  in sub_df.columns and len(sub_df) > 0 else {l: 0 for l in score_labels}
+    action_d = count_by_action(sub_df['r_days'], action_map)                if 'r_days'   in sub_df.columns and len(sub_df) > 0 else {l: 0 for l in action_map.values()}
+    mkt_d    = count_by_bin(sub_df['r_mkt'],    mkt_bins,   mkt_labels)     if 'r_mkt'    in sub_df.columns and len(sub_df) > 0 else {l: 0 for l in mkt_labels}
     dist_d   = {dtype: int(
         sub_df['r_distress'].apply(lambda s: dtype in s if isinstance(s, set) else False).sum()
-    ) for dtype in distress_order}
+    ) for dtype in distress_order} if 'r_distress' in sub_df.columns and len(sub_df) > 0 else {dtype: 0 for dtype in distress_order}
     return likely_d, score_d, action_d, mkt_d, dist_d
 
-leads_ff = dl[(dl['PROPERTY STATUS'] == 'Lead') & (dl['Data_Source'] == 'Fulfillment')].copy()
-deals_ff = dl[(dl['PROPERTY STATUS'] == 'Deal') & (dl['Data_Source'] == 'Fulfillment')].copy()
+leads_ff = dl[(dl['PROPERTY STATUS'] == 'Lead') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
+deals_ff = dl[(dl['PROPERTY STATUS'] == 'Deal') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
 F_likely, F_score, F_action, F_mkt, F_dist = compute_col_counts(leads_ff)
 G_likely, G_score, G_action, G_mkt, G_dist = compute_col_counts(deals_ff)
 print(f"  Columns F/G ready — Leads: {len(leads_ff)} | Deals: {len(deals_ff)}")
@@ -416,14 +448,28 @@ if _os.path.exists(_parquet):
     # Strip pandas metadata before to_pandas() so StringDtype columns load as
     # plain object — pandas StringDtype reconstruction balloons memory on this dataset.
     import pyarrow.parquet as _pq
-    _table = _pq.read_table(_parquet).replace_schema_metadata(None)
+    _avail = set(_pq.read_schema(_parquet).names)
+    _dom_cols = [c for c in _DOM_COLS_NEEDED if c in _avail]
+    _table = _pq.read_table(_parquet, columns=_dom_cols).replace_schema_metadata(None)
     dom = _table.to_pandas()
     del _table
-    print(f"  Loaded from parquet: {len(dom):,} rows")
+    print(f"  Loaded from parquet: {len(dom):,} rows, {len(_dom_cols)} columns")
 else:
-    print("  Parquet not found — reading xlsx and converting (first run is slower)...")
-    _xlsx = sorted(f for f in DOMAIN_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
-    dom   = pd.concat([pd.read_excel(f) for f in _xlsx], ignore_index=True)
+    print("  Parquet not found — reading source files and converting (first run is slower)...")
+    _dom_src = (sorted(f for f in DOMAIN_DIR.glob("*.xlsx") if not f.name.startswith("~$"))
+                or sorted(DOMAIN_DIR.glob("*.csv")))
+    _dom_cols_set = set(_DOM_COLS_NEEDED)
+    _src_parts = []
+    for _f in _dom_src:
+        print(f"    Reading {_f.name}...")
+        if _f.suffix == '.xlsx':
+            _src_parts.append(pd.read_excel(_f, usecols=lambda c: c in _dom_cols_set))
+        else:
+            _hdr = pd.read_csv(_f, nrows=0).columns.tolist()
+            _use = [c for c in _DOM_COLS_NEEDED if c in _hdr]
+            _src_parts.append(pd.read_csv(_f, usecols=_use, low_memory=False))
+    dom = pd.concat(_src_parts, ignore_index=True)
+    del _src_parts
     for _c in dom.select_dtypes(include='object').columns:
         dom[_c] = dom[_c].astype(str)
     dom.to_parquet(_parquet, index=False)
@@ -508,7 +554,7 @@ print(f"  Column D ready — total: {sum(D_likely.values()):,}")
 # and the fulfillment-sold subset (Column D). Same score resolution as Column D: pre-sale fulfillment MAX values.
 # ══════════════════════════════════════════════════════════════════════════════
 print("\nComputing Column E (market deals x fulfillment)...")
-md = pd.read_excel(MARKET_PATH)
+md = pd.read_csv(MARKET_PATH, low_memory=False) if MARKET_PATH.suffix.lower() == '.csv' else pd.read_excel(MARKET_PATH)
 
 if 'PropertyID' in md.columns:
     md_ids = set(md['PropertyID'].dropna().astype(int).unique())
@@ -533,7 +579,11 @@ else:
         return re.sub(r'\s+', ' ', s) or None
     def _norm_zip(z):
         if pd.isna(z): return None
-        s = re.sub(r'\D', '', str(z))[:5]
+        try:
+            z = str(int(float(str(z))))  # 7109.0 → "7109", 7036 → "7036"
+        except (ValueError, OverflowError):
+            z = str(z)
+        s = re.sub(r'\D', '', z)[:5].zfill(5)
         return s if len(s) == 5 else None
     def _key(a, z):
         na, nz = _norm_addr(a), _norm_zip(z)
@@ -617,67 +667,21 @@ print(f"  Audit flags (unique FOLIOs) — "
       f"CLIENT LEAD: {len(_lead_folios):,} (= report Col F) | "
       f"CLIENT DEAL: {len(_deal_folios):,} (= report Col G)")
 
-print(f"  Saving Fulfillment_Compilation.xlsx with validation columns...")
-# strings_to_urls=False  — disables xlsxwriter's URL auto-detection
-#   (fulfillment data contains >65,530 property URLs, exceeding Excel's per-sheet
-#   limit and causing a warning flood + memory blowup).
-# tmpdir=BASE  — keeps xlsxwriter's intermediate files on the project drive;
-#   the system %TEMP% is on C: which can be full on this machine.
-with pd.ExcelWriter(COMPILED_PATH, engine='xlsxwriter',
-                    engine_kwargs={'options': {'strings_to_urls': False,
-                                                'tmpdir': str(BASE)}}) as _writer:
-    df.to_excel(_writer, index=False)
-print(f"  Saved: {COMPILED_PATH.name}")
+_EXCEL_ROW_LIMIT = 1_048_576
+if len(df) > _EXCEL_ROW_LIMIT:
+    _csv_path = COMPILED_PATH.with_suffix('.csv')
+    print(f"  Fulfillment has {len(df):,} rows (> Excel limit) — saving as CSV...")
+    df.to_csv(_csv_path, index=False)
+    print(f"  Saved: {_csv_path.name}")
+else:
+    print(f"  Saving Fulfillment_Compilation.xlsx with validation columns...")
+    with pd.ExcelWriter(COMPILED_PATH, engine='xlsxwriter',
+                        engine_kwargs={'options': {'strings_to_urls': False,
+                                                    'tmpdir': str(BASE)}}) as _writer:
+        df.to_excel(_writer, index=False)
+    print(f"  Saved: {COMPILED_PATH.name}")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# STEP 5c: ZIP-level breakdown block
-# One row per ZIP across the same six populations (B–G), so the client can see how
-# each of their zips is behaving. Ordered by Client Deals (Column G) descending —
-# "the zips with the most deals first" — with Sold (D) then Fulfillment (C) as
-# tiebreakers so the zero-deal tail still sorts sensibly.
-#
-# Universe excludes BUYBOX SCORE 0: the domain side uses dom_b (already > 0), and
-# every fulfillment-recommended property is > 0, so C/D/E/F/G inherit the rule and
-# the ZIP-block column totals reconcile with the main report's column totals.
-# ZIP set = union of domain (buybox>0) zips and fulfillment zips.
-# ══════════════════════════════════════════════════════════════════════════════
-print("\nComputing ZIP-level breakdown block...")
-
-def _norm_zip(z):
-    if pd.isna(z): return None
-    s = re.sub(r'\D', '', str(z))[:5]
-    return s if len(s) == 5 else None
-
-# FOLIO → ZIP from the fulfillment compilation (zip is stable across months for a
-# FOLIO; keep the first valid one). Used to attribute Column C FOLIOs to a zip.
-_dfz        = df[['FOLIO', 'ZIP']].copy()
-_dfz['_z']  = _dfz['ZIP'].map(_norm_zip)
-_dfz['_fk'] = _dfz['FOLIO'].astype(str).str.strip()
-_ff_zipmap  = _dfz.dropna(subset=['_z']).drop_duplicates('_fk').set_index('_fk')['_z']
-
-# Per-population ZIP counts (same populations the main report's columns use)
-B_zip = dom_b['ZIP'].map(_norm_zip).value_counts()                                  # Total Properties
-C_zip = pd.Series(ff_agg.index.astype(str).str.strip()).map(_ff_zipmap).value_counts()  # In fulfillment
-D_zip = sold['ZIP'].map(_norm_zip).value_counts()                                   # Sold
-E_zip = mkt_sold['ZIP'].map(_norm_zip).value_counts()                               # Market Deals
-F_zip = leads_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Leads (rows)
-G_zip = deals_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Deals (rows)
-
-_all_zips = (set(B_zip.index) | set(C_zip.index) | set(D_zip.index)
-             | set(E_zip.index) | set(F_zip.index) | set(G_zip.index))
-_all_zips.discard(None)
-
-zip_table = [
-    (z,
-     int(B_zip.get(z, 0)), int(C_zip.get(z, 0)), int(D_zip.get(z, 0)),
-     int(E_zip.get(z, 0)), int(F_zip.get(z, 0)), int(G_zip.get(z, 0)))
-    for z in _all_zips
-]
-# Sort: Client Deals (G) desc, then Sold (D) desc, then Fulfillment (C) desc, then zip asc
-zip_table.sort(key=lambda r: (-r[6], -r[3], -r[2], r[0]))
-print(f"  ZIP block: {len(zip_table):,} zips "
-      f"({sum(1 for r in zip_table if r[6] > 0):,} with >=1 client deal)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -689,7 +693,7 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
                E_lik, E_sco, E_act, E_mkt, E_dis,
                F_lik, F_sco, F_act, F_mkt, F_dis,
                G_lik, G_sco, G_act, G_mkt, G_dis,
-               zip_rows=None):
+               only_distress_and_zip=False):
     n = len(COLS)
 
     def section_header(name):
@@ -712,44 +716,35 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
 
     rows = []
 
-    rows.append(section_header('Likely Deal Score'))
-    for lbl in ['100-81', '80-61', '60-41', '40-21', '20-0']:
-        rows.append(data_row(lbl, B_lik[lbl], C_lik[lbl], D_lik[lbl], E_lik[lbl], F_lik[lbl], G_lik[lbl]))
-    rows.append(data_row('Total', sum(B_lik.values()), sum(C_lik.values()), sum(D_lik.values()), sum(E_lik.values()), sum(F_lik.values()), sum(G_lik.values())))
-    rows.append(blank())
+    if not only_distress_and_zip:
+        rows.append(section_header('Likely Deal Score'))
+        for lbl in ['100-81', '80-61', '60-41', '40-21', '20-0']:
+            rows.append(data_row(lbl, B_lik[lbl], C_lik[lbl], D_lik[lbl], E_lik[lbl], F_lik[lbl], G_lik[lbl]))
+        rows.append(data_row('Total', sum(B_lik.values()), sum(C_lik.values()), sum(D_lik.values()), sum(E_lik.values()), sum(F_lik.values()), sum(G_lik.values())))
+        rows.append(blank())
 
-    rows.append(section_header('Total Score'))
-    for lbl in ['1000-801', '800-601', '600-401', '400-201', '200-0']:
-        rows.append(data_row(lbl, B_sco[lbl], C_sco[lbl], D_sco[lbl], E_sco[lbl], F_sco[lbl], G_sco[lbl]))
-    rows.append(data_row('Total', sum(B_sco.values()), sum(C_sco.values()), sum(D_sco.values()), sum(E_sco.values()), sum(F_sco.values()), sum(G_sco.values())))
-    rows.append(blank())
+        rows.append(section_header('Total Score'))
+        for lbl in ['1000-801', '800-601', '600-401', '400-201', '200-0']:
+            rows.append(data_row(lbl, B_sco[lbl], C_sco[lbl], D_sco[lbl], E_sco[lbl], F_sco[lbl], G_sco[lbl]))
+        rows.append(data_row('Total', sum(B_sco.values()), sum(C_sco.values()), sum(D_sco.values()), sum(E_sco.values()), sum(F_sco.values()), sum(G_sco.values())))
+        rows.append(blank())
 
-    rows.append(section_header('Action Plan'))
-    for lbl in ['30 day', '60 day', '90 day']:
-        rows.append(data_row(lbl, B_act[lbl], C_act[lbl], D_act[lbl], E_act[lbl], F_act[lbl], G_act[lbl]))
-    rows.append(data_row('Total', sum(B_act.values()), sum(C_act.values()), sum(D_act.values()), sum(E_act.values()), sum(F_act.values()), sum(G_act.values())))
-    rows.append(blank())
+        rows.append(section_header('Action Plan'))
+        for lbl in ['30 day', '60 day', '90 day']:
+            rows.append(data_row(lbl, B_act[lbl], C_act[lbl], D_act[lbl], E_act[lbl], F_act[lbl], G_act[lbl]))
+        rows.append(data_row('Total', sum(B_act.values()), sum(C_act.values()), sum(D_act.values()), sum(E_act.values()), sum(F_act.values()), sum(G_act.values())))
+        rows.append(blank())
 
-    rows.append(section_header('Mkt Count'))
-    for lbl in ['1 to 5', '6 to 10', '11 to 19', '20+']:
-        rows.append(data_row(lbl, B_mkt[lbl], C_mkt[lbl], D_mkt[lbl], E_mkt[lbl], F_mkt[lbl], G_mkt[lbl]))
-    rows.append(data_row('Total', sum(B_mkt.values()), sum(C_mkt.values()), sum(D_mkt.values()), sum(E_mkt.values()), sum(F_mkt.values()), sum(G_mkt.values())))
-    rows.append(blank())
+        rows.append(section_header('Mkt Count'))
+        for lbl in ['1 to 5', '6 to 10', '11 to 19', '20+']:
+            rows.append(data_row(lbl, B_mkt[lbl], C_mkt[lbl], D_mkt[lbl], E_mkt[lbl], F_mkt[lbl], G_mkt[lbl]))
+        rows.append(data_row('Total', sum(B_mkt.values()), sum(C_mkt.values()), sum(D_mkt.values()), sum(E_mkt.values()), sum(F_mkt.values()), sum(G_mkt.values())))
+        rows.append(blank())
 
     rows.append(section_header('Distress'))
     for dtype in distress_order:
         rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], E_dis[dtype], F_dis[dtype], G_dis[dtype]))
     rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(E_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
-
-    # ── ZIP Code block — one row per zip, ordered by Client Deals desc ──────────
-    if zip_rows:
-        rows.append(blank())
-        rows.append(section_header(ZIP_SECTION_TITLE))
-        tB = tC = tD = tE = tF = tG = 0
-        for z, b, c, d, e, f, g in zip_rows:
-            rows.append(data_row(z, b, c, d, e, f, g))
-            tB += b; tC += c; tD += d; tE += e; tF += f; tG += g
-        rows.append(data_row('Total', tB, tC, tD, tE, tF, tG))
 
     return rows
 
@@ -955,7 +950,7 @@ def write_excel(path, rows, sheet_title):
     hi_font = Font(name='Helvetica', bold=True, size=10, color='006100')
     lo_fill = PatternFill('solid', fgColor='FFC7CE')   # light red
     lo_font = Font(name='Helvetica', bold=True, size=10, color='9C0006')
-    THREE_EACH = {'Distress', ZIP_SECTION_TITLE}       # rest get top/bottom 1
+    THREE_EACH = {'Distress'}                           # rest get top/bottom 1
 
     sections, current = [], None
     for i, row_data in enumerate(rows):
@@ -1012,7 +1007,7 @@ rows = build_rows(
     E_likely, E_score, E_action, E_mkt, E_dist,
     F_likely, F_score, F_action, F_mkt, F_dist,
     G_likely, G_score, G_action, G_mkt, G_dist,
-    zip_rows=zip_table,
+    only_distress_and_zip=DISTRESS_AND_ZIP_ONLY,
 )
 
 print(f"\nWriting report...")
