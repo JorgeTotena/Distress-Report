@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-05-03 — fixed domain duplicate-FOLIO inflation in Columns B / D / E (deduped after load, keep most recent LAST SALE DATE)
+**Last updated:** 2026-06-16 — Leverage Companies; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -25,7 +25,7 @@ Working directory: `E:\Claude projects\Test project\Distress Report`
 3. **Disposition timelines** — deals take time to close; the window captures active-lead outcomes.
 4. **No surprises** — earlier versions enforced a 6-month "intended window" that silently dropped files outside it. The folder is now the single source of truth.
 
-**Current window:** 2025-11 – 2026-01 (3 files in folder)
+**Current window:** 2025-01 – 2026-03 (11 months, 31 files in folder)
 
 ---
 
@@ -61,12 +61,14 @@ All fulfillment files in `Fulfillments/` compiled into one dataset.
 ### Step 3 — Domain Compilation
 **Script:** `compile_domain.py`
 **Output:** `Domain Full Data/domain.parquet`
-Reads all xlsx parts in `Domain Full Data/` and concatenates into a single parquet. Re-run whenever domain files change.
+Reads all xlsx **or csv** parts in `Domain Full Data/` and saves a trimmed parquet (only the ~27 columns in `_DOM_COLS_NEEDED`). Re-run whenever domain files change.
 
-**Current domain:** `COO config_712.6K_412_part_1.xlsx` + `COO config_712.6K_412_part_2.xlsx`
-- 716,089 rows, 709,929 unique FOLIOs
-- 254,915 properties with BUYBOX SCORE > 0
-- Contains `DEFAULT RISK` column (273,042 FOLIOs flagged)
+**Current domain:** 4 CSV parts — `COO config_1.6M_386_part_1.csv` through `_part_4.csv`
+- ~2,581,394 rows, ~1,444,626 unique FOLIOs (1,444,627 after dedupe)
+- 348,735 properties with BUYBOX SCORE > 0
+- Contains `DEFAULT RISK` column (681,352 FOLIOs flagged)
+
+**Column filtering:** Both `compile_domain.py` and `build_domain_report.py` share `_DOM_COLS_NEEDED` — only those ~27 columns are loaded/cached. Add any new field to both files and re-run `compile_domain.py`.
 
 **Note:** Some older domain exports omit `DEFAULT RISK`. The script handles this gracefully — if the column is missing, Default Risk counts will be 0 and a warning is printed. No crash.
 
@@ -91,26 +93,28 @@ Reads all xlsx parts in `Domain Full Data/` and concatenates into a single parqu
 
 ### Step 5 — Full Report: Columns B, C, D, E, F, G + Formulas H–K (CURRENT MAIN SCRIPT)
 **Script:** `build_domain_report.py`
-**Output:** `{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx` (dynamic — e.g. `SBD - Distress Report - 2026-04.xlsx`)
+**Output:** `{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx` (dynamic — e.g. `Leverage Companies - Distress Report - 2026-06.xlsx`)
+
+**Sections in the Excel:** Likely Deal Score, Total Score, Action Plan, Mkt Count, Distress. ZIP Code section removed at client request.
 
 All data columns populated:
 
-| Column | Description | Source | Count |
+| Column | Description | Source | Count (Jun 2026 run) |
 |---|---|---|---|
-| B | Total Properties | Domain (BUYBOX SCORE > 0) | 254,915 |
-| C | Properties in the fulfillment | Fulfillment MAX | 233,266 |
-| D | Sold since Aug 1 2025 | Domain LAST SALE DATE ≥ Aug 1, in fulfillment | 4,887 |
-| E | Market Deals | Properties bought at a significant discount and resold for profit in a short period — overlap of Market Deals file ∩ fulfillment-sold (join on PropertyID = BUYBOX ID) | 3,284 |
-| F | Clients Lead | Fulfillment-matched leads + appointments (>= 2023-09-26) | 4,690 |
-| G | Client Deals | Fulfillment-matched deals (>= 2023-09-26) | 41 |
+| B | Total Properties | Domain (BUYBOX SCORE > 0) | 348,735 |
+| C | Properties in the fulfillment | Fulfillment MAX | 434,462 |
+| D | Sold since Jan 1 2025 | Domain LAST SALE DATE ≥ Jan 1 2025, in fulfillment | 20,044 |
+| E | Market Deals | Properties bought at a significant discount and resold for profit in a short period — overlap of Market Deals file ∩ fulfillment-sold (join on PropertyID = BUYBOX ID) | 938 |
+| F | Clients Lead | Fulfillment-matched leads + appointments (>= 2025-01-01) | 22,282 |
+| G | Client Deals | Fulfillment-matched deals (>= 2025-01-01) | 48 |
 | H | Sold Concentration % | Formula: =D/C | — |
 | I | Sold to Investors Concentration | Formula: =E/C | — |
 | J | Client Deals Concentration | Formula: =G/C | — |
 | K | Client Leads Concentration | Formula: =F/C | — |
 
-**Domain file:** Loaded from `Domain Full Data/domain.parquet` (cached from two xlsx parts via `compile_domain.py`).
+**Domain file:** Loaded from `Domain Full Data/domain.parquet` (cached from 4 CSV parts via `compile_domain.py`).
 **Default Risk:** Direct column in the domain file (`DEFAULT RISK`); gracefully handled if absent.
-**Market Deals:** `Market Deals/SBD Market Deals.xlsx` — join via `PropertyID` → `PROPERTY ID (BUYBOX)`.
+**Market Deals:** `Market Deals/Markeet Deals Leverage.xlsx` — join via `PropertyID` → `PROPERTY ID (BUYBOX)`.
 
 ---
 
@@ -158,20 +162,21 @@ All data columns populated:
 
 ---
 
-## Key Numbers (Latest Run — April 2026)
+## Key Numbers (Latest Run — June 2026, Leverage Companies)
 
 | Metric | Value |
 |---|---|
-| Domain properties (BUYBOX > 0) | 254,915 |
-| Fulfillment unique FOLIOs | 233,266 |
-| Sold since Aug 1 2025 (in fulfillment) | 4,887 |
-| Market Deals (overlap with fulfillment-sold) | 3,284 |
-| Client Leads (Column F, fulfillment-matched, >= 2023-09-26) | 4,690 |
-| Client Deals (Column G, fulfillment-matched, >= 2023-09-26) | 41 |
-| Owner Occupied — Column C | 191,905 |
-| Owner Occupied — Column F (Leads) | 3,915 |
+| Domain properties (BUYBOX > 0) | 348,735 |
+| Fulfillment unique FOLIOs | 434,462 |
+| Sold since Jan 1 2025 (in fulfillment) | 20,044 |
+| Market Deals (overlap with fulfillment-sold) | 938 |
+| Client Leads (Column F, fulfillment-matched, >= 2025-01-01) | 22,282 |
+| Client Deals (Column G, fulfillment-matched, >= 2025-01-01) | 48 |
+| Owner Occupied — Column C | 306,214 |
+| Owner Occupied — Column F (Leads) | 15,406 |
 | Owner Occupied — Column G (Deals) | 30 |
-| FOLIOs with Default Risk | 273,042 |
+| FOLIOs with Default Risk | 681,352 |
+| Counties with matched sales | 8 |
 
 ---
 
@@ -268,10 +273,13 @@ All data columns populated:
 
 | Field | Value |
 |---|---|
-| Client name | SBD / SBDHOUSING |
-| Start date with 8020REI | **2023-09-26** |
-| Deals/Leads file | `Documents/Deals and Leads SBD.xlsx` (auto-discovered by name pattern) |
-| Market Deals file | `Market Deals/SBD Market Deals.xlsx` |
+| Client name | Leverage Companies |
+| Start date with 8020REI | **2024-05-24** |
+| Deals/Leads file | `Documents/Deals and Leads Leverage Companies.xlsx` (auto-discovered by name pattern) |
+| Market Deals file | `Market Deals/Markeet Deals Leverage.xlsx` |
+| Domain source | 4 CSV parts in `Domain Full Data/` (COO config_1.6M_386_part_1–4.csv) |
+| Fulfillment window | Jan 2025 – Mar 2026 (31 xlsx files) |
+| Excel sections | Distress only (ZIP section removed at client request) |
 
 Three variables at the top of `build_domain_report.py` must be updated when switching clients:
 - `CLIENT_NAME` — used in the output filename (`{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx`)

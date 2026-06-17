@@ -27,28 +27,25 @@ Before running the report, make sure the following files are in place:
 Distress Report/
 │
 ├── Fulfillments/                        ← Monthly fulfillment exports (xlsx)
-│   ├── 2025-08-08 SBDHOUSING 75K Direct Mail.xlsx
-│   ├── 2025-09-08 SBDHOUSING 116K Direct Mail.xlsx
-│   ├── 2025-10-08 SBDHOUSING 116K Direct Mail.xlsx
-│   ├── 2025-11-08 SBDHOUSING 116K Direct Mail.xlsx
-│   ├── 2025-12-07 SBDHOUSING 116K Direct Mail.xlsx
-│   └── 2026-01-07 SBDHOUSING 129K Direct Mail.xlsx
+│   ├── 2025-01-07 CLIENT 75K Direct Mail.xlsx
+│   ├── 2025-02-04 CLIENT 120K Cold Calling.xlsx
+│   └── ...                             ← all months you want in the analysis window
 │
-├── Domain Full Data/                    ← Domain export (can be split in multiple parts)
-│   ├── COO config_712.6K_412_part_1.xlsx
-│   └── COO config_712.6K_412_part_2.xlsx
+├── Domain Full Data/                    ← Domain export (xlsx or csv, can be split in multiple parts)
+│   ├── COO config_1.6M_386_part_1.csv
+│   └── COO config_1.6M_386_part_2.csv  ← csv and xlsx both supported
 │
 ├── Documents/                           ← Deals & Leads file from client CRM
-│   └── Deals and Leads SBD.xlsx
+│   └── Deals and Leads CLIENT.xlsx
 │
 ├── Market Deals/                        ← Market deals file (investor activity)
-│   └── SBD Market Deals.xlsx
+│   └── Market Deals CLIENT.xlsx
 │
 ├── compile_domain.py                    ← Run once when domain files change
 └── build_domain_report.py              ← MAIN SCRIPT — generates the full report
 ```
 
-> **Important:** File names do not need to match exactly. The scripts auto-discover files by folder and partial name match. Deals/Leads: any `.xlsx` in `Documents/` whose name contains "leads" or "deals". Domain parts: all `.xlsx` files in `Domain Full Data/`.
+> **Important:** File names do not need to match exactly. The scripts auto-discover files by folder and partial name match. Deals/Leads: any `.xlsx` in `Documents/` whose name contains "leads" or "deals". Domain parts: all `.xlsx` or `.csv` files in `Domain Full Data/`.
 
 ---
 
@@ -57,9 +54,9 @@ Distress Report/
 At the top of `build_domain_report.py`, set three variables before each client run:
 
 ```python
-CLIENT_NAME       = "SBD"                   # Used in the output filename
-CLIENT_START_DATE = pd.to_datetime("2023-09-26")  # When the client started with 8020REI
-MARKET_PATH       = BASE / "Market Deals" / "SBD Market Deals.xlsx"  # Path to market deals file
+CLIENT_NAME       = "Leverage Companies"           # Used in the output filename
+CLIENT_START_DATE = pd.to_datetime("2024-05-24")   # When the client started with 8020REI
+MARKET_PATH       = BASE / "Market Deals" / "Markeet Deals Leverage.xlsx"  # Path to market deals file
 ```
 
 These are the only values that change between clients.
@@ -79,7 +76,7 @@ Make sure all required files are in their correct folders (see structure above).
 
 ### Step 2 — Compile the domain (run once, or when domain files change)
 
-This step converts the domain xlsx files into a fast-loading `.parquet` cache. Only needs to be re-run when the domain source files are replaced or updated.
+This step reads the domain source files (xlsx or csv) and saves a trimmed `.parquet` cache containing only the columns the report needs. Only needs to be re-run when the domain source files are replaced or updated.
 
 ```bash
 python compile_domain.py
@@ -89,13 +86,12 @@ python compile_domain.py
 
 You will see output like:
 ```
-Found 2 file(s): ['COO config_712.6K_412_part_1.xlsx', 'COO config_712.6K_412_part_2.xlsx']
-Reading part 1: COO config_712.6K_412_part_1.xlsx...
-  412000 rows
-Reading part 2: COO config_712.6K_412_part_2.xlsx...
-  304089 rows
-Combined: 716089 rows, 709929 unique FOLIOs
-Saved: Domain Full Data/domain.parquet
+Found 4 file(s): ['COO config_1.6M_386_part_1.csv', ...]
+Reading part 1: COO config_1.6M_386_part_1.csv...
+  644836 rows, 27 columns
+...
+Combined: 2581394 rows, 1444626 unique FOLIOs
+Saved: Domain Full Data/domain.parquet (27 columns)
 ```
 
 ### Step 3 — Run the main report script
@@ -106,14 +102,14 @@ python build_domain_report.py
 
 This script does everything automatically:
 - Uses every `.xlsx` in `Fulfillments/` as the analysis window (folder defines the window)
-- Compiles all fulfillment files
-- Loads the domain parquet
+- Compiles all fulfillment files — caches each as a `.parquet` sidecar on first run; subsequent runs load from parquet (much faster)
+- Loads the domain parquet (column-filtered for speed)
 - Loads the deals & leads file
 - Loads the market deals file
 - Builds all columns (B through G) with distress metrics and score buckets
 - Writes the final formatted Excel report
 
-**Output:** `SBD - Distress Report - YYYY-MM.xlsx` (e.g. `SBD - Distress Report - 2026-04.xlsx`)
+**Output:** `Leverage Companies - Distress Report - YYYY-MM.xlsx` (e.g. `Leverage Companies - Distress Report - 2026-06.xlsx`)
 
 A side audit file is also written each run: `Fulfillment_Compilation.xlsx`. The compilation contains every fulfillment row plus three validation columns appended at the end so you can spot-check the report:
 
