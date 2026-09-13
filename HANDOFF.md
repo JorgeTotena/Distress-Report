@@ -367,13 +367,31 @@ this change — it receives `df`/`dom`, never `dl` or `month_table`.
 | Field | Value |
 |---|---|
 | Client name | Prime Housing Solutions |
-| Start date with 8020REI | **~2024-07-01** (inferred: earliest appointment 2024-07-21, earliest deal 2024-08-02; informational only) |
+| Client ID | 2047 |
+| CSM | Victoria Solis |
+| Start date with 8020REI | **2025-05-31** (from the 8020REI client record; onboarded 2025-06-12) |
+| Active counties | ST LUCIE, MIAMI-DADE, BROWARD, PALM BEACH (FL) — the St Lucie + SoFlo split in the file names |
+| Direct Mail monthly goal | 270,000 (matches the Month block's C of ~270k/month) |
 | Deals/Leads file | `Documents/Leads & Deals Prime Housing Solutions.xlsx` (no `PROPERTY STATUS` — see Fix 14) |
 | Market Deals file | `Market Deals/Market Deals Prime Housing Solutions.xlsx` (no PropertyID → address+ZIP fallback) |
 | Domain source | 6 CSV parts in `Domain Full Data/` (COO config_2.5M_449_part_1–6.csv), 2,532,207 rows |
 | Fulfillment window | Jun 2025 – Jun 2026 (13 months, 40 xlsx files) |
 | Markets | SoFlo + St Lucie. Cold Calling ends after Mar 2026 (client plan change, not missing files) |
 | Excel sections | Full report (all sections, incl. Month + ZIP) |
+
+
+> **Pull `CLIENT_START_DATE` from the Clients Data MCP every run — never infer it.**
+> `search_clients({query})` → `get_client_profile({client_id, sections:["basic-info","account-timeline"]})`
+> and use the **`Client Since`** field verbatim.
+>
+> Client CRM exports routinely carry the client's own pre-8020REI deal history — Prime Housing's
+> goes back to 2024-07, ~10 months before their real `Client Since` of 2025-05-31. Inferring from
+> the file is systematically too early.
+>
+> The script can't call the MCP itself (standalone Python, no credentials), so this is a manual
+> lookup before the run. Do it anyway: the same profile confirms active counties (cross-checks the
+> fulfillment file names and the companion's county count) and monthly channel goals (cross-checks
+> Column C volume and explains channel gaps in the window).
 
 Three variables at the top of `build_domain_report.py` must be updated when switching clients:
 - `CLIENT_NAME` — used in the output filename (`{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx`)

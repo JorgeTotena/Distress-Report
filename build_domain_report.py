@@ -40,10 +40,12 @@ OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.tod
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Prime Housing Solutions — earliest appointment 2024-07-21 / deal 2024-08-02 in the
-# leads & deals file, so engagement began ~2024-07. Informational only: leads/deals are
-# filtered to the fulfillment window start, not to this date.
-CLIENT_START_DATE = pd.to_datetime("2024-07-01")
+# Prime Housing Solutions LLC (client ID 2047) — "Client Since" per the 8020REI client
+# record; onboarded 2025-06-12, first fulfillment 2025-06-11. Do NOT infer this from the
+# leads & deals file: that export carries the client's own pre-8020REI deal history
+# (appointments/deals back to 2024-07), which predates the engagement by ~10 months.
+# Informational only: leads/deals are filtered to the fulfillment window start, not this.
+CLIENT_START_DATE = pd.to_datetime("2025-05-31")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
 # ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────

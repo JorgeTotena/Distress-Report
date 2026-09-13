@@ -54,12 +54,40 @@ Distress Report/
 At the top of `build_domain_report.py`, set three variables before each client run:
 
 ```python
-CLIENT_NAME       = "Leverage Companies"           # Used in the output filename
-CLIENT_START_DATE = pd.to_datetime("2024-05-24")   # When the client started with 8020REI
-MARKET_PATH       = BASE / "Market Deals" / "Market Deals Leverage.xlsx"  # Path to market deals file
+CLIENT_NAME       = "Prime Housing Solutions"      # Used in the output filename
+CLIENT_START_DATE = pd.to_datetime("2025-05-31")   # "Client Since" — look this up, see below
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals Prime Housing Solutions.xlsx"
 ```
 
 These are the only values that change between clients.
+
+### Where `CLIENT_START_DATE` comes from — look it up, never infer it
+
+**Every run, pull the date from the 8020REI client record via the Clients Data MCP:**
+
+```
+search_clients({ query: "<client name>" })        →  client id
+get_client_profile({ client_id: "<id>",
+                     sections: ["basic-info", "account-timeline"] })
+```
+
+Use the **`Client Since`** field verbatim.
+
+> ⚠️ **Do not infer it from the deals/leads file.** Client CRM exports routinely carry the
+> client's *own pre-8020REI deal history*. Prime Housing Solutions' export has appointments and
+> deals back to **2024-07**, but their real `Client Since` is **2025-05-31** — inferring from the
+> file lands ~10 months too early, and the error always skews the same way.
+
+The script cannot call the MCP itself (standalone Python, no credentials), so this is a manual
+lookup before the run. It is worth doing regardless: the same profile confirms the client's
+**active counties** (cross-check against the fulfillment file names and the companion's county
+count) and their **monthly channel goals** (cross-check against Column C volume, and explains
+channel gaps — e.g. Prime Housing's Direct Mail goal of 270,000/month matches the Month block's
+C, and having no cold-call goal explains Cold Calling ending after Mar 2026).
+
+Note `CLIENT_START_DATE` is currently **informational only** — it is printed, not filtered on.
+The analysis window is driven entirely by `WINDOW_START`, derived from the earliest filename in
+`Fulfillments/`. A wrong value changes no number, but it misleads the next reader.
 
 ---
 
@@ -239,12 +267,14 @@ Claude Code will read the scripts, update the necessary variables, run the steps
 2. Drop the client's domain files into `Domain Full Data/`
 3. Drop the client's deals & leads file into `Documents/`
 4. Drop the client's market deals file into `Market Deals/`
-5. Open `build_domain_report.py` and update the three client variables at the top (lines 35–41):
+5. Look the client up in the **Clients Data MCP** (`search_clients` → `get_client_profile`) and
+   note `Client Since`, the active counties, and the monthly channel goals
+6. Open `build_domain_report.py` and update the three client variables at the top:
    - `CLIENT_NAME`
-   - `CLIENT_START_DATE`
+   - `CLIENT_START_DATE` ← the `Client Since` value from step 5, **not** inferred from the data
    - `MARKET_PATH`
-6. Run `python compile_domain.py` (domain files changed)
-7. Run `python build_domain_report.py`
+7. Run `python compile_domain.py` (domain files changed)
+8. Run `python build_domain_report.py`
 
 ---
 
