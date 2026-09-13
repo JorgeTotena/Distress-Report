@@ -15,7 +15,9 @@ Domain Full Data/*.xlsx
 Domain Full Data/*.parquet
 Domain Full Data/*.csv
 Market Deals/*.xlsx
+Market Deals/*.csv
 Documents/*.xlsx
+Documents/*.csv
 
 # Dynamic report output — filename includes client name + month
 * - Distress Report - *.xlsx
