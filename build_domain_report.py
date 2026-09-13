@@ -34,14 +34,16 @@ COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run f
 AUDIT_PATH        = BASE / "Fulfillment_Audit.xlsx"          # deduped one-row-per-FOLIO audit (fits Excel)
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Market Deals Leverage.xlsx"
-CLIENT_NAME       = "Leverage Companies"
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals Prime Housing Solutions.xlsx"
+CLIENT_NAME       = "Prime Housing Solutions"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Leverage Companies started doing business with 8020REI on ~2024-05-24
-CLIENT_START_DATE = pd.to_datetime("2024-05-24")
+# Prime Housing Solutions — earliest appointment 2024-07-21 / deal 2024-08-02 in the
+# leads & deals file, so engagement began ~2024-07. Informational only: leads/deals are
+# filtered to the fulfillment window start, not to this date.
+CLIENT_START_DATE = pd.to_datetime("2024-07-01")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
 # ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────
@@ -96,7 +98,10 @@ COLS = [
     'Sold Concentration %Sold', 'Sold to investors concentration',
     'Client Deals Concentration', 'Client Leads Concentration',
 ]
-SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress'}
+ZIP_SECTION_TITLE   = 'ZIP Code — most Client Deals first (BUYBOX SCORE > 0)'
+MONTH_SECTION_TITLE = 'Month — by event month (chronological)'
+SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress',
+                 MONTH_SECTION_TITLE, ZIP_SECTION_TITLE}
 
 # ── Default Risk lookup — derived from domain (DEFAULT RISK column) ───────────
 # Loaded early so dr_folios is available for fulfillment injection (STEP 1)
@@ -360,13 +365,16 @@ print(f"  Column C ready: {len(ff_agg):,} properties")
 # STEP 2: Columns F and G — fulfillment-matched leads/deals only
 # ══════════════════════════════════════════════════════════════════════════════
 _dl_files = sorted(
-    f for f in DOCS_DIR.glob("*.xlsx")
+    f for f in list(DOCS_DIR.glob("*.xlsx")) + list(DOCS_DIR.glob("*.csv"))
     if re.search(r'leads|deals', f.name, re.IGNORECASE) and not f.name.startswith("~$")
 )
 if not _dl_files:
     raise FileNotFoundError(f"No leads/deals file found in {DOCS_DIR}")
 print(f"\nLoading Deals and Leads ({len(_dl_files)} file(s)): {[f.name for f in _dl_files]}")
-dl = pd.concat([pd.read_excel(f) for f in _dl_files], ignore_index=True)
+dl = pd.concat(
+    [pd.read_csv(f) if f.suffix.lower() == '.csv' else pd.read_excel(f) for f in _dl_files],
+    ignore_index=True,
+)
 
 # ── Fix #1: drop fully-identical duplicate rows ──────────────────────────────
 # Some client exports (e.g. Leverage) repeat the exact same lead/deal row 2–4×.
@@ -378,6 +386,29 @@ print(f"  Loaded {_pre_dl:,} rows; dropped {_pre_dl - len(dl):,} fully-identical
 
 _dl_has_folio  = 'FOLIO' in dl.columns
 _dl_has_status = 'PROPERTY STATUS' in dl.columns
+
+# ── Fallback: derive PROPERTY STATUS from the funnel date columns ────────────
+# Some client CRM exports (e.g. Prime Housing Solutions) ship no PROPERTY STATUS
+# column and encode the stage as four nested date columns instead. The funnel is
+# strictly nested (a deal always carries lead + appointment + contract dates), so
+# the furthest-progressed non-null date identifies the stage unambiguously. Rows
+# with no dates at all fall through to 'Lead', consistent with the blank-date rule
+# below that keeps undated leads rather than ruling them out of the window.
+# Only runs when PROPERTY STATUS is absent — files that carry it are untouched.
+if _dl_has_folio and not _dl_has_status:
+    _funnel = ['DEAL DATE', 'CONTRACT DATE', 'APPOINTMENT DATE', 'LEAD DATE']
+    if any(c in dl.columns for c in _funnel):
+        _stage = pd.Series('Lead', index=dl.index, dtype=object)
+        for _col, _label in [('APPOINTMENT DATE', 'Appointment'),
+                             ('CONTRACT DATE',    'Contract'),
+                             ('DEAL DATE',        'Deal')]:
+            if _col in dl.columns:
+                _stage[pd.to_datetime(dl[_col], errors='coerce').notna()] = _label
+        dl['PROPERTY STATUS'] = _stage
+        _dl_has_status = True
+        print("  [INFO] No PROPERTY STATUS column - derived from funnel date columns "
+              "(furthest-progressed stage wins; undated rows -> Lead):")
+        print("         " + " | ".join(f"{k}: {v:,}" for k, v in _stage.value_counts().items()))
 if not _dl_has_folio or not _dl_has_status:
     print(f"  [WARN] Deals and Leads file missing required columns (FOLIO={_dl_has_folio}, PROPERTY STATUS={_dl_has_status}). Columns F and G will be 0.")
     dl = pd.DataFrame(columns=['FOLIO_key', 'PROPERTY STATUS', 'LIKELY DEAL SCORE', 'SCORE',
@@ -396,17 +427,35 @@ else:
     # ── Filter leads/deals to on or after the START OF THE FULFILLMENT WINDOW ───
     LEADS_DEALS_SINCE = WINDOW_START
     print(f"  Rows before date filter: {len(dl):,}")
+    if 'APPOINTMENT DATE' not in dl.columns:
+        print("  [WARN] Deals and Leads file missing 'APPOINTMENT DATE' column — Appointment rows treated as blank-dated (kept, per blank-date rule).")
+        dl['APPOINTMENT DATE'] = pd.NaT
     dl['_date_col'] = pd.NaT
     dl.loc[dl['PROPERTY STATUS'] == 'Lead',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Lead',        'LEAD DATE'],        errors='coerce')
     dl.loc[dl['PROPERTY STATUS'] == 'Appointment', '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'APPOINTMENT DATE'], errors='coerce')
     dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   'LEAD DATE'],        errors='coerce')
     dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Contract',    'LEAD DATE'],        errors='coerce')
-    dl.loc[dl['PROPERTY STATUS'] == 'Deal',        '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Deal',        'LAST SALE DATE'],   errors='coerce')
+    # Deals are windowed on LAST SALE DATE (when the property actually sold).
+    # Where the client export has no sale date, fall back to DEAL DATE so the row
+    # is windowed on when the client closed it rather than being dropped as undated.
+    _is_deal   = dl['PROPERTY STATUS'] == 'Deal'
+    _deal_date = pd.to_datetime(dl.loc[_is_deal, 'LAST SALE DATE'], errors='coerce')
+    if 'DEAL DATE' in dl.columns:
+        _fallback = pd.to_datetime(dl.loc[_is_deal, 'DEAL DATE'], errors='coerce')
+        _n_filled = (_deal_date.isna() & _fallback.notna()).sum()
+        _deal_date = _deal_date.fillna(_fallback)
+        if _n_filled:
+            print(f"    Deals with no LAST SALE DATE -> windowed on DEAL DATE: {_n_filled:,}")
+    dl.loc[_is_deal, '_date_col'] = _deal_date
     _lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
     _keep = (
         (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= LEADS_DEALS_SINCE))) |
         (~_lead_types & (dl['_date_col'] >= LEADS_DEALS_SINCE))
     )
+    # Keep the date that qualified each row for the window as '_event_dt' — the
+    # Month block buckets F/G on exactly this date, so monthly rows reconcile to
+    # the Column F/G totals by construction.
+    dl['_event_dt'] = dl['_date_col']
     dl = dl[_keep].drop(columns=['_date_col'])
     dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
     print(f"  Rows after date filter (>= {LEADS_DEALS_SINCE.date()} = window start, blanks kept for leads): {len(dl):,}")
@@ -724,10 +773,17 @@ _mkt_folios = set(mkt_sold['FOLIO'].astype(str).str.strip().unique())
 _lead_folios = set(leads_ff['FOLIO_key'].dropna().astype(str).str.strip().unique())
 _deal_folios = set(deals_ff['FOLIO_key'].dropna().astype(str).str.strip().unique())
 
+def _map_or_nat(keys, mapping):
+    # keys.map(mapping) breaks on an empty datetime-valued mapping Series (pandas
+    # internally rebuilds it as float64 and can't cast datetimes back) — short-circuit.
+    if len(mapping) == 0:
+        return pd.Series(pd.NaT, index=keys.index)
+    return keys.map(mapping)
+
 _df_folio_key = df['FOLIO'].astype(str).str.strip()
-df['LAST SALE DATE']  = _df_folio_key.map(_last_sale)
-df['LEAD DATE']        = _df_folio_key.map(_lead_date_map)
-df['APPOINTMENT DATE'] = _df_folio_key.map(_appt_date_map)
+df['LAST SALE DATE']  = _map_or_nat(_df_folio_key, _last_sale)
+df['LEAD DATE']        = _map_or_nat(_df_folio_key, _lead_date_map)
+df['APPOINTMENT DATE'] = _map_or_nat(_df_folio_key, _appt_date_map)
 df['PROPERTY STATUS'] = _df_folio_key.map(_dl_status).fillna('')
 df['MARKET DEAL']     = np.where(_df_folio_key.isin(_mkt_folios), 'Yes', 'No')
 df['CLIENT LEAD']     = np.where(_df_folio_key.isin(_lead_folios), 'Yes', 'No')
@@ -813,6 +869,119 @@ for _i, _target in enumerate(_audit_targets):
             print(f"  [WARN] Could not write the audit file (locked): {_target.name}. Close it and re-run.")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 5c: ZIP-level breakdown block
+# One row per ZIP across the same six populations (B–G), so the client can see how
+# each of their zips is behaving. Ordered by Client Deals (Column G) descending —
+# "the zips with the most deals first" — with Sold (D) then Fulfillment (C) as
+# tiebreakers so the zero-deal tail still sorts sensibly.
+#
+# Universe excludes BUYBOX SCORE 0: the domain side uses dom_b (already > 0), and
+# every fulfillment-recommended property is > 0, so C/D/E/F/G inherit the rule and
+# the ZIP-block column totals reconcile with the main report's column totals.
+# ZIP set = union of domain (buybox>0) zips and fulfillment zips.
+# ══════════════════════════════════════════════════════════════════════════════
+print("\nComputing ZIP-level breakdown block...")
+
+# FOLIO → ZIP from the fulfillment compilation (zip is stable across months for a
+# FOLIO; keep the first valid one). Used to attribute Column C FOLIOs to a zip.
+_dfz        = df[['FOLIO', 'ZIP']].copy()
+_dfz['_z']  = _dfz['ZIP'].map(_norm_zip)
+_dfz['_fk'] = _dfz['FOLIO'].astype(str).str.strip()
+_ff_zipmap  = _dfz.dropna(subset=['_z']).drop_duplicates('_fk').set_index('_fk')['_z']
+
+# Per-population ZIP counts (same populations the main report's columns use)
+B_zip = dom_b['ZIP'].map(_norm_zip).value_counts()                                  # Total Properties
+C_zip = pd.Series(ff_agg.index.astype(str).str.strip()).map(_ff_zipmap).value_counts()  # In fulfillment
+D_zip = sold['ZIP'].map(_norm_zip).value_counts()                                   # Sold
+E_zip = mkt_sold['ZIP'].map(_norm_zip).value_counts()                               # Market Deals
+F_zip = leads_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Leads (unique property)
+G_zip = deals_ff['ZIP'].map(_norm_zip).value_counts()                               # Client Deals (unique property)
+
+_all_zips = (set(B_zip.index) | set(C_zip.index) | set(D_zip.index)
+             | set(E_zip.index) | set(F_zip.index) | set(G_zip.index))
+_all_zips.discard(None)
+
+zip_table = [
+    (z,
+     int(B_zip.get(z, 0)), int(C_zip.get(z, 0)), int(D_zip.get(z, 0)),
+     int(E_zip.get(z, 0)), int(F_zip.get(z, 0)), int(G_zip.get(z, 0)))
+    for z in _all_zips
+]
+# Sort: Client Deals (G) desc, then Sold (D) desc, then Fulfillment (C) desc, then zip asc
+zip_table.sort(key=lambda r: (-r[6], -r[3], -r[2], r[0]))
+print(f"  ZIP block: {len(zip_table):,} zips "
+      f"({sum(1 for r in zip_table if r[6] > 0):,} with >=1 client deal)")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP 5d: Month breakdown block
+# One row per calendar month on an EVENT-MONTH basis — each population is bucketed
+# by the month the event actually happened:
+#   C — the fulfillment month the property was recommended in (unique FOLIOs/month)
+#   D — the month the property sold          (LAST SALE DATE)
+#   E — the month the market-deal property sold (LAST SALE DATE)
+#   F — the month that qualified the lead    (_event_dt, same date the window used)
+#   G — the month that qualified the deal    (_event_dt: LAST SALE DATE, else DEAL DATE)
+#
+# D/E/F/G reconcile exactly to the report's Column D/E/F/G totals. Column C does NOT:
+# a FOLIO recommended in five months is counted in all five, so the C column sums
+# higher than the Column C total (675,793). Column B is left blank — the domain
+# universe has no month dimension.
+#
+# Rows span the union of every month seen, so the block runs past the fulfillment
+# window (sales keep landing after the last fulfillment). Leads kept with a blank
+# date (the blank-date rule) land in a trailing "(no date)" row so the Total still
+# reconciles to Column F.
+# ══════════════════════════════════════════════════════════════════════════════
+print("\nComputing Month breakdown block...")
+
+def _month_counts(series):
+    """Bucket a datetime series into 'YYYY-MM' counts, dropping NaT."""
+    _dt = pd.to_datetime(series, errors='coerce')
+    return _dt.dropna().dt.to_period('M').astype(str).value_counts()
+
+# C — unique FOLIOs recommended per fulfillment month (df carries one row per FOLIO-month)
+C_mon = df.drop_duplicates(['Month', 'FOLIO'])['Month'].value_counts()
+D_mon = _month_counts(sold['LAST SALE DATE'])
+E_mon = _month_counts(mkt_sold['LAST SALE DATE'])
+F_mon = _month_counts(leads_ff['_event_dt']) if '_event_dt' in leads_ff.columns else pd.Series(dtype=int)
+G_mon = _month_counts(deals_ff['_event_dt']) if '_event_dt' in deals_ff.columns else pd.Series(dtype=int)
+
+# Leads kept with no date at all — surfaced so the Total reconciles to Column F
+_F_nodate = (int(pd.to_datetime(leads_ff['_event_dt'], errors='coerce').isna().sum())
+             if '_event_dt' in leads_ff.columns else 0)
+_G_nodate = (int(pd.to_datetime(deals_ff['_event_dt'], errors='coerce').isna().sum())
+             if '_event_dt' in deals_ff.columns else 0)
+
+_all_months = sorted(set(C_mon.index) | set(D_mon.index) | set(E_mon.index)
+                     | set(F_mon.index) | set(G_mon.index))
+
+_MONTH_NAMES = {'01': 'January', '02': 'February', '03': 'March', '04': 'April',
+                '05': 'May', '06': 'June', '07': 'July', '08': 'August',
+                '09': 'September', '10': 'October', '11': 'November', '12': 'December'}
+
+def _month_label(m):
+    _y, _mo = m.split('-')
+    return f"{_MONTH_NAMES.get(_mo, _mo)} {_y}"
+
+month_table = [
+    (_month_label(m),
+     '',                       # B — no month dimension
+     int(C_mon.get(m, 0)), int(D_mon.get(m, 0)), int(E_mon.get(m, 0)),
+     int(F_mon.get(m, 0)), int(G_mon.get(m, 0)))
+    for m in _all_months
+]
+if _F_nodate or _G_nodate:
+    month_table.append(('(no date)', '', 0, 0, 0, _F_nodate, _G_nodate))
+
+print(f"  Month block: {len(_all_months):,} month(s) "
+      f"({_all_months[0] if _all_months else '-'} .. {_all_months[-1] if _all_months else '-'})"
+      + (f" + {_F_nodate:,} undated lead(s)" if _F_nodate else "")
+      + (f" + {_G_nodate:,} undated deal(s)" if _G_nodate else ""))
+print(f"    D {sum(r[3] for r in month_table):,} | E {sum(r[4] for r in month_table):,} "
+      f"| F {sum(r[5] for r in month_table):,} | G {sum(r[6] for r in month_table):,} "
+      f"(should equal Column D/E/F/G totals)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -824,7 +993,7 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
                E_lik, E_sco, E_act, E_mkt, E_dis,
                F_lik, F_sco, F_act, F_mkt, F_dis,
                G_lik, G_sco, G_act, G_mkt, G_dis,
-               only_distress_and_zip=False):
+               only_distress_and_zip=False, zip_rows=None, month_rows=None):
     n = len(COLS)
 
     def section_header(name):
@@ -876,6 +1045,28 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
     for dtype in distress_order:
         rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], E_dis[dtype], F_dis[dtype], G_dis[dtype]))
     rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(E_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
+
+    # ── Month block — one row per event month, chronological ───────────────────
+    # Sits between Distress and ZIP. B is blank (no month dimension); C counts a
+    # FOLIO once per month it was recommended, so only D/E/F/G tie to the totals.
+    if month_rows:
+        rows.append(blank())
+        rows.append(section_header(MONTH_SECTION_TITLE))
+        tC = tD = tE = tF = tG = 0
+        for label, b, c, d, e, f, g in month_rows:
+            rows.append(data_row(label, b, c, d, e, f, g))
+            tC += c; tD += d; tE += e; tF += f; tG += g
+        rows.append(data_row('Total', '', tC, tD, tE, tF, tG))
+
+    # ── ZIP Code block — one row per zip, ordered by Client Deals desc ──────────
+    if zip_rows:
+        rows.append(blank())
+        rows.append(section_header(ZIP_SECTION_TITLE))
+        tB = tC = tD = tE = tF = tG = 0
+        for z, b, c, d, e, f, g in zip_rows:
+            rows.append(data_row(z, b, c, d, e, f, g))
+            tB += b; tC += c; tD += d; tE += e; tF += f; tG += g
+        rows.append(data_row('Total', tB, tC, tD, tE, tF, tG))
 
     return rows
 
@@ -1081,7 +1272,7 @@ def write_excel(path, rows, sheet_title):
     hi_font = Font(name='Helvetica', bold=True, size=10, color='006100')
     lo_fill = PatternFill('solid', fgColor='FFC7CE')   # light red
     lo_font = Font(name='Helvetica', bold=True, size=10, color='9C0006')
-    THREE_EACH = {'Distress'}                           # rest get top/bottom 1
+    THREE_EACH = {'Distress', MONTH_SECTION_TITLE, ZIP_SECTION_TITLE}   # rest get top/bottom 1
 
     sections, current = [], None
     for i, row_data in enumerate(rows):
@@ -1150,6 +1341,8 @@ rows = build_rows(
     F_likely, F_score, F_action, F_mkt, F_dist,
     G_likely, G_score, G_action, G_mkt, G_dist,
     only_distress_and_zip=DISTRESS_AND_ZIP_ONLY,
+    month_rows=month_table,
+    zip_rows=zip_table,
 )
 
 print(f"\nWriting report...")

@@ -129,6 +129,27 @@ The compilation contains every fulfillment row plus validation columns appended 
 
 **Note:** leads with a blank `LEAD DATE` are kept (can't be ruled out of the window), so a FOLIO can show `CLIENT LEAD=Yes` with no `LEAD DATE`. Dropping blank-dated leads downstream (e.g. in Power BI) undercounts vs. the report.
 
+### Deals & Leads file — schema tolerance
+
+**`PROPERTY STATUS` is optional.** Some client CRMs export it; others encode the funnel as four
+nested date columns instead. When `PROPERTY STATUS` is absent, the script derives it from
+`LEAD DATE` / `APPOINTMENT DATE` / `CONTRACT DATE` / `DEAL DATE` — the funnel is strictly nested
+(a deal always carries the earlier dates), so the **furthest-progressed** non-null date identifies
+the stage. Rows with no dates at all fall through to `Lead`, consistent with the blank-date rule
+above. Files that *do* carry `PROPERTY STATUS` are untouched. The run log prints the derived
+distribution, e.g.:
+
+```
+[INFO] No PROPERTY STATUS column - derived from funnel date columns
+       (furthest-progressed stage wins; undated rows -> Lead):
+       Lead: 2,261 | Deal: 261 | Contract: 19 | Appointment: 1
+```
+
+**Deal windowing.** Deals are windowed on `LAST SALE DATE` — when the property actually sold.
+Where a deal row has **no** sale date, the script falls back to `DEAL DATE` so the row is windowed
+on when the client closed it rather than being dropped as undated. Deals that *do* have a sale
+date older than the window start still fall outside the window, as before.
+
 ---
 
 ## What the Report Contains
@@ -147,6 +168,33 @@ The compilation contains every fulfillment row plus validation columns appended 
 | K | Client Leads Concentration — formula =F/C |
 
 Each column includes sub-rows for distress breakdowns (Pre-foreclosure, Vacant, Taxes, Estate, Probate, Liens, High Equity, 55+, Default Risk, Absentee, Owner Occupied, …) and score/action plan distribution. Binary distresses for fulfillment-related columns (C/D/E/F/G) are read directly from the fulfillment file's per-month flag columns (e.g. `PRE-FORECLOSURE > 0`); MAIN DISTRESS #1–4 ranking is no longer used.
+
+### Report sections (in order)
+
+`Likely Deal Score` → `Total Score` → `Action Plan` → `Mkt Count` → `Distress` → **`Month`** → `ZIP Code`
+
+### Month section — by event month
+
+One row per calendar month, counting what **happened** that month:
+
+| Column | Bucketed on |
+|---|---|
+| B | *(blank — the domain universe has no month dimension)* |
+| C | the fulfillment month the property was recommended in (unique FOLIOs per month) |
+| D | the month the property sold (`LAST SALE DATE`) |
+| E | the month the market-deal property sold (`LAST SALE DATE`) |
+| F | the month that qualified the lead (the same date the window filter used) |
+| G | the month that qualified the deal (`LAST SALE DATE`, else `DEAL DATE`) |
+
+**D, E, F and G reconcile exactly to their column totals** — F/G bucket on the same date that
+qualified the row for the window, so they tie by construction. **Column C does not reconcile:**
+a FOLIO recommended in five months is counted in all five, so the C column sums higher than the
+Column C total. Leads kept with a blank date (per the blank-date rule) land in a trailing
+`(no date)` row so the F total still ties.
+
+The block spans the union of every month seen, so it runs **past the end of the fulfillment
+window** — sales keep landing after the last fulfillment file. A month with two fulfillment
+batches shows roughly double the C of its neighbours; that affects C only, not D/E/F/G.
 
 ---
 

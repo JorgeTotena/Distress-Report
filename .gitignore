@@ -35,3 +35,6 @@ __pycache__/
 # Temp Excel lock files
 ~$*.xlsx
 ~$*.xls
+
+# Fulfillment files parked out of the analysis window (duplicates, wrong month)
+_excluded/

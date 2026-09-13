@@ -105,7 +105,7 @@ Reads all xlsx **or csv** parts in `Domain Full Data/` and saves a trimmed parqu
 **Script:** `build_domain_report.py`
 **Output:** `{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx` (dynamic — e.g. `Leverage Companies - Distress Report - 2026-06.xlsx`)
 
-**Sections in the Excel:** Likely Deal Score, Total Score, Action Plan, Mkt Count, Distress. ZIP Code section removed at client request.
+**Sections in the Excel (in order):** Likely Deal Score, Total Score, Action Plan, Mkt Count, Distress, **Month** (Fix 16), ZIP Code. Set `DISTRESS_AND_ZIP_ONLY = True` to emit only Distress + Month + ZIP (Leverage had ZIP dropped at client request; it is back on by default).
 
 All data columns populated:
 
@@ -172,21 +172,25 @@ All data columns populated:
 
 ---
 
-## Key Numbers (Latest Run — June 2026, Leverage Companies)
+## Key Numbers (Latest Run — September 2026, Prime Housing Solutions)
 
 | Metric | Value |
 |---|---|
-| Domain properties (BUYBOX > 0) | 369,459 |
-| Fulfillment unique FOLIOs | 434,462 |
-| Sold since Jan 1 2025 (in fulfillment) | 16,562 |
-| Market Deals (overlap with fulfillment-sold) | 742 |
-| Client Leads (Column F, fulfillment-matched, >= 2025-01-01) | 22,282 |
-| Client Deals (Column G, fulfillment-matched, >= 2025-01-01) | 48 |
-| Owner Occupied — Column C | 306,214 |
-| Owner Occupied — Column F (Leads) | 15,406 |
-| Owner Occupied — Column G (Deals) | 30 |
-| FOLIOs with Default Risk | 681,352 |
-| Counties with matched sales | 8 |
+| Domain properties (BUYBOX > 0) | 682,415 |
+| Fulfillment unique FOLIOs | 675,793 |
+| Fulfillment rows (per FOLIO-month) | 3,169,092 |
+| Sold since Jun 1 2025 (in fulfillment) | 18,054 |
+| Market Deals (overlap with fulfillment-sold) | 1,156 |
+| Client Leads (Column F, fulfillment-matched) | 1,502 |
+| Client Deals (Column G, fulfillment-matched) | 102 |
+| Owner Occupied — Column C | 565,437 |
+| Owner Occupied — Column F (Leads) | 1,259 |
+| Owner Occupied — Column G (Deals) | 79 |
+| FOLIOs with Default Risk | 973,072 |
+| Counties with matched sales | 4 |
+| ZIP block | 197 zips (65 with >= 1 client deal) |
+| Month block | 15 months (2025-06 .. 2026-08) + 237 undated leads |
+
 
 ---
 
@@ -277,6 +281,39 @@ All data columns populated:
 
 ---
 
+### Fix 14 — Deals/Leads file with no PROPERTY STATUS column
+Some client CRMs (Prime Housing Solutions) export no `PROPERTY STATUS`; the funnel arrives as four
+nested date columns instead. Previously this tripped the "missing required columns" guard, silently
+zeroed Columns F/G, and then crashed the ZIP block with `KeyError: 'ZIP'` (the empty `dl` frame has
+no ZIP column). The script now derives `PROPERTY STATUS` from `LEAD DATE` / `APPOINTMENT DATE` /
+`CONTRACT DATE` / `DEAL DATE` when the column is absent — furthest-progressed non-null date wins,
+undated rows fall through to `Lead`. Verified on Prime Housing: the presence pattern is strictly
+nested (`L---` 1,899 / `LACD` 261 / `LAC-` 19 / `LA--` 1 / `----` 362), so the mapping is
+unambiguous. Files that carry `PROPERTY STATUS` are untouched.
+
+### Fix 15 — Deals with no LAST SALE DATE were dropped from the window
+Deals are windowed on `LAST SALE DATE`. Rows with a blank sale date evaluated as NaT and fell out of
+the window entirely. They now fall back to `DEAL DATE`, so a closed deal is windowed on when the
+client closed it rather than discarded. On Prime Housing this recovered 5 deal rows → Column G
+99 → 102. Deals whose sale date is genuinely older than the window start still fall outside it.
+
+### Fix 16 — Month breakdown block added to the Excel (between Distress and ZIP)
+One row per calendar month on an **event-month** basis: C = the fulfillment month the property was
+recommended in, D/E = the month the property sold (`LAST SALE DATE`), F/G = the month that qualified
+the row for the window (`_event_dt`, preserved from the window filter — so F/G tie to the column
+totals by construction). B is blank; the domain universe has no month dimension.
+
+- **D/E/F/G reconcile exactly** to the Column D/E/F/G totals.
+- **C does not reconcile** — a FOLIO recommended in five months is counted in all five, so the C
+  column sums higher than Column C. This is intended.
+- Leads kept with a blank date land in a trailing `(no date)` row so the F total still ties.
+- The block runs past the window end (sales land after the last fulfillment). A month with two
+  fulfillment batches shows ~double the C of its neighbours; affects C only.
+- Gets top/bottom-3 highlighting, matching the other long sections (Distress, ZIP).
+
+The companion HTML/PDF already had its own `Monthly Sale Volume` table and is **not** affected by
+this change — it receives `df`/`dom`, never `dl` or `month_table`.
+
 ## Open / Decided Issues
 
 | Issue | Status | Decision |
@@ -329,13 +366,14 @@ All data columns populated:
 
 | Field | Value |
 |---|---|
-| Client name | Leverage Companies |
-| Start date with 8020REI | **2024-05-24** |
-| Deals/Leads file | `Documents/Deals and Leads Leverage Companies.xlsx` (auto-discovered by name pattern) |
-| Market Deals file | `Market Deals/Market Deals Leverage.xlsx` (no PropertyID → address+ZIP fallback) |
-| Domain source | 4 CSV parts in `Domain Full Data/` (COO config_1.6M_386_part_1–4.csv) |
-| Fulfillment window | Jan 2025 – Mar 2026 (31 xlsx files) |
-| Excel sections | Distress only (ZIP section removed at client request) |
+| Client name | Prime Housing Solutions |
+| Start date with 8020REI | **~2024-07-01** (inferred: earliest appointment 2024-07-21, earliest deal 2024-08-02; informational only) |
+| Deals/Leads file | `Documents/Leads & Deals Prime Housing Solutions.xlsx` (no `PROPERTY STATUS` — see Fix 14) |
+| Market Deals file | `Market Deals/Market Deals Prime Housing Solutions.xlsx` (no PropertyID → address+ZIP fallback) |
+| Domain source | 6 CSV parts in `Domain Full Data/` (COO config_2.5M_449_part_1–6.csv), 2,532,207 rows |
+| Fulfillment window | Jun 2025 – Jun 2026 (13 months, 40 xlsx files) |
+| Markets | SoFlo + St Lucie. Cold Calling ends after Mar 2026 (client plan change, not missing files) |
+| Excel sections | Full report (all sections, incl. Month + ZIP) |
 
 Three variables at the top of `build_domain_report.py` must be updated when switching clients:
 - `CLIENT_NAME` — used in the output filename (`{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx`)
