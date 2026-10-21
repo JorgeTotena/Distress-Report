@@ -64,8 +64,13 @@ def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
                     window_start: pd.Timestamp,
                     ff_distress_map: dict | None = None,
                     ff_abs=None,
-                    dist_map: dict | None = None) -> dict:
+                    dist_map: dict | None = None,
+                    sold_folios: set | None = None) -> dict:
     """Build the companion analysis from the shared in-memory frames.
+
+    sold_folios: the Excel's Column D FOLIOs (period + 1..24-month attribution
+    rules). When supplied it defines the sold universe so N == Column D exactly;
+    otherwise falls back to "sold on/after window_start".
 
     Signal determination MUST match the Excel audit (Column D). When the Excel's
     per-FOLIO distress data is supplied (ff_distress_map / ff_abs / dist_map), each
@@ -84,7 +89,10 @@ def _build_analysis(gen, ff: pd.DataFrame, dom: pd.DataFrame,
     sales["FOLIO"] = sales["FOLIO"].astype(str).str.strip().str.upper()
     sales["LAST SALE DATE"] = pd.to_datetime(sales["LAST SALE DATE"], errors="coerce")
     sales = sales.drop_duplicates(subset=["FOLIO"], keep="last")
-    sold_folios = set(sales.loc[sales["LAST SALE DATE"] >= window_start, "FOLIO"])
+    if sold_folios is not None:
+        sold_folios = {str(f).strip().upper() for f in sold_folios}
+    else:
+        sold_folios = set(sales.loc[sales["LAST SALE DATE"] >= window_start, "FOLIO"])
 
     # ── Trim the fulfillment frame BEFORE copying ──────────────────────────────
     # The companion only needs SOLD properties (a few % of FOLIOs) and a handful of
@@ -214,7 +222,8 @@ def generate_historical(client_name: str,
                         report_date: str | None = None,
                         ff_distress_map: dict | None = None,
                         ff_abs=None,
-                        dist_map: dict | None = None) -> dict:
+                        dist_map: dict | None = None,
+                        sold_folios: set | None = None) -> dict:
     """Build the HTML + PDF report next to the Excel report. Returns paths + N.
 
     Pass ff_distress_map / ff_abs / dist_map (from build_domain_report.py) so the
@@ -240,7 +249,8 @@ def generate_historical(client_name: str,
     print(f"  Window: {window_label}  |  Report date: {report_date}")
 
     analysis = _build_analysis(gen, ff, dom, window_start,
-                               ff_distress_map=ff_distress_map, ff_abs=ff_abs, dist_map=dist_map)
+                               ff_distress_map=ff_distress_map, ff_abs=ff_abs, dist_map=dist_map,
+                               sold_folios=sold_folios)
     n = len(analysis["adf"])
     print(f"  Matched sold properties (= Column D): {n:,}")
     if ff_distress_map is not None:

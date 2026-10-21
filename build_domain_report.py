@@ -13,9 +13,15 @@ Generates Expected_Result_Max_BCDFG_InFulfillment.xlsx with:
   Column J — Client Deals Conc.               =G/C  (formula)
   Column K — Client Leads Conc.               =F/C  (formula)
 
-Window: defined entirely by the .xlsx files present in Fulfillments/. SOLD_SINCE / WINDOW_START
-is the first day of the earliest fulfillment month; WINDOW_END is the first day of the latest.
-The user controls the window by adding or removing files from the folder.
+Window: defined entirely by the .xlsx files present in Fulfillments/ (every file is used — no
+trailing months are excluded). SOLD_SINCE / WINDOW_START is the first day of the earliest
+fulfillment month; WINDOW_END is the first day of the latest. PERIOD_END = the run date — nothing
+dated after it (or before WINDOW_START) is counted in D/E/F/G.
+Sale attribution (D/E/G): a sale counts only if the property was sent in a fulfillment at least
+1 month and at most 24 months before the sale date (exact send date from the filename; any send
+of the property can qualify the sale).
+Client Deals (G): only rows whose "Deal validation" column is "Approved".
+Mkt Count: strongest channel of DM / SMS / Cold Calling (not combined).
 Deals/Leads: any .xlsx in Documents/ whose name contains "leads" or "deals" (case-insensitive).
 """
 
@@ -34,18 +40,17 @@ COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run f
 AUDIT_PATH        = BASE / "Fulfillment_Audit.xlsx"          # deduped one-row-per-FOLIO audit (fits Excel)
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Market Deals Prime Housing Solutions.xlsx"
-CLIENT_NAME       = "Prime Housing Solutions"
+MARKET_PATH       = BASE / "Market Deals" / "Market Deals IBUYOhio.xlsx"
+CLIENT_NAME       = "IBUYOHIO"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# Prime Housing Solutions LLC (client ID 2047) — "Client Since" per the 8020REI client
-# record; onboarded 2025-06-12, first fulfillment 2025-06-11. Do NOT infer this from the
-# leads & deals file: that export carries the client's own pre-8020REI deal history
-# (appointments/deals back to 2024-07), which predates the engagement by ~10 months.
+# IBuyOhio (client ID 1882) — "Client Since" per the 8020REI client record;
+# onboarded 2025-03-19, first fulfillment 2025-03-17. Do NOT infer this from the
+# leads & deals file: client CRM exports can carry pre-8020REI deal history.
 # Informational only: leads/deals are filtered to the fulfillment window start, not this.
-CLIENT_START_DATE = pd.to_datetime("2025-05-31")
+CLIENT_START_DATE = pd.to_datetime("2025-03-12")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
 
 # ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────
@@ -57,6 +62,18 @@ DISTRESS_AND_ZIP_ONLY = False
 # WINDOW_START / WINDOW_END / SOLD_SINCE are derived from the earliest and
 # latest fulfillment-file months in STEP 1 below. The user controls the
 # window by adding or removing files from the folder.
+# The period ends on the run date: sales / leads / deals dated after it are not counted.
+PERIOD_END = pd.Timestamp.today().normalize()
+
+# ── Sale attribution ─────────────────────────────────────────────────────────
+# A sale (D/E/G) is credited to a fulfillment only if it happened at least
+# ATTRIB_MIN_MONTHS and at most ATTRIB_MAX_MONTHS after a date the property was
+# sent (e.g. sent 2025-10-10 → counts from 2025-11-10 through 2027-10-10).
+ATTRIB_MIN_MONTHS = 1
+ATTRIB_MAX_MONTHS = 24
+
+# ── Marketing channels — Mkt Count = strongest of these (not combined) ───────
+MKT_COLS = ['MARKETING DM COUNT', 'MARKETING SMS COUNT', 'MARKETING CC COUNT']
 
 # ── Bucket definitions ────────────────────────────────────────────────────────
 likely_bins   = [-0.5, 20, 40, 60, 80, 100.5]
@@ -238,12 +255,30 @@ _ff_files = sorted(f for f in FULFILLMENTS_DIR.glob("*.xlsx") if not f.name.star
 if not _ff_files:
     raise FileNotFoundError(f"No fulfillment files found in {FULFILLMENTS_DIR}")
 
-_ff_months   = sorted({f.name[:7] for f in _ff_files})
+def _file_month(f):
+    """YYYY-MM of the first YYYY-MM-DD in the filename — the date isn't always the
+    prefix (e.g. 'Butler - 2026-06-12 ...', 'cleaned_Delaware - 2026-07-05 ...')."""
+    _m = re.search(r'(\d{4}-\d{2})-\d{2}', f.name)
+    if not _m:
+        raise ValueError(f"No YYYY-MM-DD date in fulfillment filename: {f.name}")
+    return _m.group(1)
+
+def _file_date(f):
+    """Exact send date (first YYYY-MM-DD in the filename) — anchors sale attribution."""
+    return pd.Timestamp(re.search(r'\d{4}-\d{2}-\d{2}', f.name).group(0))
+
+def _file_channel(f):
+    return ('DM' if 'Direct Mail' in f.name else
+            'SMS' if 'SMS' in f.name else
+            'Cold Calling' if 'Cold Calling' in f.name else 'Other')
+
+_ff_months   = sorted({_file_month(f) for f in _ff_files})
 WINDOW_START = pd.Timestamp(_ff_months[0])
 WINDOW_END   = pd.Timestamp(_ff_months[-1])
 SOLD_SINCE   = WINDOW_START   # Column D cutoff — first day of the earliest fulfillment month
 print(f"  Window: {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} "
-      f"({len(_ff_months)} month(s), {len(_ff_files)} file(s))")
+      f"({len(_ff_months)} month(s), {len(_ff_files)} file(s)); "
+      f"period end (run date) {PERIOD_END.date()}")
 
 _FF_COLS_NEEDED = {
     'FOLIO', 'ADDRESS', 'ZIP', 'COUNTY',
@@ -251,13 +286,13 @@ _FF_COLS_NEEDED = {
     'ABSENTEE', 'HIGH EQUITY', 'DOWNSIZING', 'PRE-FORECLOSURE', 'VACANT',
     '55+', 'ESTATE', 'INTER FAMILY TRANSFER', 'TAXES', 'PROBATE',
     'JUDGEMENT', 'LIENS CITY/COUNTY', 'LIENS OTHER', 'LIENS MECHANIC',
-    'DEFAULT RISK', 'MARKETING DM COUNT', 'MARKETING SMS COUNT',
+    'DEFAULT RISK', *MKT_COLS,
     'PROPERTY ID (BUYBOX)',
 }
 
 _DOM_COLS_NEEDED = [
     'FOLIO', 'BUYBOX SCORE', 'LIKELY DEAL SCORE', 'SCORE',
-    'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'ACTION PLANS',
+    *MKT_COLS, 'ACTION PLANS',
     'LAST SALE DATE', 'MARKETING FIRST RECOMMENDATION', 'PROPERTY ID (BUYBOX)', 'ZIP', 'ADDRESS',
     'COUNTY',  # needed by the companion's county-level Distress Universe page (_build_overview)
     'ABSENTEE', 'HIGH EQUITY', 'DOWNSIZING', 'PRE-FORECLOSURE', 'VACANT',
@@ -266,21 +301,31 @@ _DOM_COLS_NEEDED = [
     'DEFAULT RISK',
 ]
 
+import pyarrow.parquet as _pq_ff
 _parts = []
 for _f in _ff_files:
     _pq_cache = _f.with_suffix('.parquet')
-    if _pq_cache.exists() and _pq_cache.stat().st_mtime >= _f.stat().st_mtime:
+    # Caches written before Cold Calling was tracked have no MARKETING CC COUNT
+    # column — rebuild those so a CC count present in the .xlsx isn't lost.
+    _cache_ok = (_pq_cache.exists() and _pq_cache.stat().st_mtime >= _f.stat().st_mtime
+                 and 'MARKETING CC COUNT' in _pq_ff.read_schema(_pq_cache).names)
+    if _cache_ok:
         _part = pd.read_parquet(_pq_cache)
         print(f"  {_f.name}: {len(_part):,} rows (parquet cache)")
     else:
         _all_cols = pd.read_excel(_f, nrows=0).columns.tolist()
         _use = [c for c in _all_cols if c in _FF_COLS_NEEDED]
         _part = pd.read_excel(_f, usecols=_use)
-        _part['Month']             = _f.name[:7]
-        _part['Marketing_Channel'] = 'DM' if 'Direct Mail' in _f.name else ('SMS' if 'SMS' in _f.name else 'Other')
+        for _col in MKT_COLS:          # channel not in this file = 0 contacts on it
+            if _col not in _part.columns:
+                _part[_col] = 0
+        _part['Month']             = _file_month(_f)
         _part['Source_File']       = _f.name
         _part.to_parquet(_pq_cache, index=False)
         print(f"  {_f.name}: {len(_part):,} rows (saved parquet cache)")
+    # Derived from the filename on every run (not cached) so rule changes apply to old caches
+    _part['Sent_Date']         = _file_date(_f)
+    _part['Marketing_Channel'] = _file_channel(_f)
     _parts.append(_part)
 
 df = pd.concat(_parts, ignore_index=True)
@@ -290,17 +335,15 @@ print(f"  Total: {len(df):,} rows, {df['FOLIO'].nunique():,} unique FOLIOs")
 
 df['LIKELY DEAL SCORE']   = pd.to_numeric(df['LIKELY DEAL SCORE'],   errors='coerce')
 df['SCORE']               = pd.to_numeric(df['SCORE'],               errors='coerce')
-for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
+for _col in MKT_COLS:
     df[_col] = pd.to_numeric(df[_col], errors='coerce').fillna(0) if _col in df.columns else 0
 df['Month_dt']            = pd.to_datetime(df['Month'], format='%Y-%m')
 df['ACTION_DAYS']         = df['ACTION PLANS'].apply(extract_days)
-df['total_mkt']           = df['MARKETING DM COUNT'] + df['MARKETING SMS COUNT']
+df['total_mkt']           = df[MKT_COLS].sum(axis=1)
 
-# Marketing count: max of (total DM across all months, total SMS across all months)
-# e.g. 7 SMS + 4 DM → 7, not 11 — measures strongest channel, not combined
-ff_dm  = df.groupby('FOLIO')['MARKETING DM COUNT'].sum()
-ff_sms = df.groupby('FOLIO')['MARKETING SMS COUNT'].sum()
-ff_mkt = pd.concat([ff_dm, ff_sms], axis=1).max(axis=1).rename('ff_mkt')
+# Marketing count: max of (total DM, total SMS, total Cold Calling across all months)
+# e.g. 7 SMS + 4 DM + 2 CC → 7, not 13 — measures strongest channel, not combined
+ff_mkt = df.groupby('FOLIO')[MKT_COLS].sum().max(axis=1).rename('ff_mkt')
 
 ff_agg = df.groupby('FOLIO').agg(
     ff_likely = ('LIKELY DEAL SCORE', 'max'),
@@ -362,6 +405,27 @@ ff_mkt_adj = ff_agg['ff_mkt'].fillna(0).clip(lower=1)
 C_mkt    = count_by_bin(ff_mkt_adj, mkt_bins, mkt_labels)
 print(f"  Column C ready: {len(ff_agg):,} properties")
 
+# ── Sale attribution: every date each FOLIO was sent in a fulfillment ─────────
+ff_sends = (df[['FOLIO', 'Sent_Date']]
+            .assign(FOLIO=df['FOLIO'].astype(str).str.strip())
+            .drop_duplicates())
+
+def qualifying_send(folios, sale_dates):
+    """Latest send date that qualifies each sale, aligned to the inputs' index (NaT = not attributed).
+
+    A send qualifies when send + ATTRIB_MIN_MONTHS <= sale <= send + ATTRIB_MAX_MONTHS.
+    Any send of the property can qualify it — a property re-sent later is judged on
+    the later send, so an old send outside 24 months doesn't block it.
+    """
+    _s = pd.DataFrame({'FOLIO': folios.astype(str).str.strip(),
+                       '_sale': pd.to_datetime(sale_dates, errors='coerce')})
+    _s['_row'] = range(len(_s))
+    _m = _s.dropna(subset=['_sale']).merge(ff_sends, on='FOLIO', how='inner')
+    _ok = ((_m['_sale'] >= _m['Sent_Date'] + pd.DateOffset(months=ATTRIB_MIN_MONTHS)) &
+           (_m['_sale'] <= _m['Sent_Date'] + pd.DateOffset(months=ATTRIB_MAX_MONTHS)))
+    _best = _m[_ok].groupby('_row')['Sent_Date'].max()
+    return pd.Series(_s['_row'].map(_best).values, index=folios.index, dtype='datetime64[ns]')
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 2: Columns F and G — fulfillment-matched leads/deals only
@@ -414,19 +478,34 @@ if _dl_has_folio and not _dl_has_status:
 if not _dl_has_folio or not _dl_has_status:
     print(f"  [WARN] Deals and Leads file missing required columns (FOLIO={_dl_has_folio}, PROPERTY STATUS={_dl_has_status}). Columns F and G will be 0.")
     dl = pd.DataFrame(columns=['FOLIO_key', 'PROPERTY STATUS', 'LIKELY DEAL SCORE', 'SCORE',
-                                'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'dl_days', 'dl_mkt',
+                                *MKT_COLS, 'dl_days', 'dl_mkt',
                                 'Data_Source'])
 else:
     for _col in ['LIKELY DEAL SCORE', 'SCORE']:
         dl[_col] = pd.to_numeric(dl[_col] if _col in dl.columns else np.nan, errors='coerce')
-    for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
-        dl[_col] = pd.to_numeric(dl[_col] if _col in dl.columns else 0, errors='coerce').fillna(0)
+    for _col in MKT_COLS:
+        dl[_col] = pd.to_numeric(dl[_col], errors='coerce').fillna(0) if _col in dl.columns else 0
     dl['dl_days'] = dl['ACTION PLANS'].apply(extract_days) if 'ACTION PLANS' in dl.columns else 0
-    dl['dl_mkt']  = dl['MARKETING DM COUNT'] + dl['MARKETING SMS COUNT']
+    dl['dl_mkt']  = dl[MKT_COLS].max(axis=1)   # strongest channel, same rule as C
     dl['FOLIO_key'] = dl['FOLIO'].astype(str).str.strip()
     dl.loc[dl['FOLIO_key'] == 'nan', 'FOLIO_key'] = np.nan
 
-    # ── Filter leads/deals to on or after the START OF THE FULFILLMENT WINDOW ───
+    # ── Deals count only when "Deal validation" = Approved ───────────────────
+    # Any other value (blank, Rejected, Pending, …) drops the deal from the analysis.
+    # Leads are not validated. Missing column = hard stop, so deals are never
+    # silently counted unvalidated.
+    _val_col = next((c for c in dl.columns if str(c).strip().upper() == 'DEAL VALIDATION'), None)
+    if _val_col is None:
+        raise KeyError(f"Deals and Leads file has no 'Deal validation' column — required to "
+                       f"count Client Deals (only 'Approved' deals count). Files: {[f.name for f in _dl_files]}")
+    dl['DEAL VALIDATION'] = dl[_val_col].astype(str).str.strip()
+    _is_deal_row  = dl['PROPERTY STATUS'] == 'Deal'
+    _not_approved = _is_deal_row & (dl['DEAL VALIDATION'].str.upper() != 'APPROVED')
+    print(f"  Deal validation: {int((_is_deal_row & ~_not_approved).sum()):,} Approved deal row(s) kept | "
+          f"{int(_not_approved.sum()):,} not approved dropped")
+    dl = dl[~_not_approved].copy()
+
+    # ── Filter leads/deals to the PERIOD: window start .. run date ────────────
     LEADS_DEALS_SINCE = WINDOW_START
     print(f"  Rows before date filter: {len(dl):,}")
     if 'APPOINTMENT DATE' not in dl.columns:
@@ -450,9 +529,10 @@ else:
             print(f"    Deals with no LAST SALE DATE -> windowed on DEAL DATE: {_n_filled:,}")
     dl.loc[_is_deal, '_date_col'] = _deal_date
     _lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
+    _in_period  = (dl['_date_col'] >= LEADS_DEALS_SINCE) & (dl['_date_col'] <= PERIOD_END)
     _keep = (
-        (_lead_types & (dl['_date_col'].isna() | (dl['_date_col'] >= LEADS_DEALS_SINCE))) |
-        (~_lead_types & (dl['_date_col'] >= LEADS_DEALS_SINCE))
+        (_lead_types & (dl['_date_col'].isna() | _in_period)) |
+        (~_lead_types & _in_period)
     )
     # Keep the date that qualified each row for the window as '_event_dt' — the
     # Month block buckets F/G on exactly this date, so monthly rows reconcile to
@@ -460,7 +540,7 @@ else:
     dl['_event_dt'] = dl['_date_col']
     dl = dl[_keep].drop(columns=['_date_col'])
     dl.loc[dl['PROPERTY STATUS'].isin(['Appointment', 'Dead Lead', 'Contract']), 'PROPERTY STATUS'] = 'Lead'
-    print(f"  Rows after date filter (>= {LEADS_DEALS_SINCE.date()} = window start, blanks kept for leads): {len(dl):,}")
+    print(f"  Rows after date filter ({LEADS_DEALS_SINCE.date()} .. {PERIOD_END.date()}, blanks kept for leads): {len(dl):,}")
     print(f"    Leads (incl. appointments + dead leads): {(dl['PROPERTY STATUS'] == 'Lead').sum():,} | Deals: {(dl['PROPERTY STATUS'] == 'Deal').sum():,}")
 
 ff_for_join = ff_agg.reset_index().rename(columns={'FOLIO': 'FOLIO_key'})
@@ -525,6 +605,14 @@ def compute_col_counts(sub_df):
 
 leads_ff = dl[(dl['PROPERTY STATUS'] == 'Lead') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
 deals_ff = dl[(dl['PROPERTY STATUS'] == 'Deal') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
+# Sale attribution — the deal's date (LAST SALE DATE, else DEAL DATE) must fall
+# 1..24 months after a send of the property.
+if len(deals_ff):
+    deals_ff['_qual_send'] = qualifying_send(deals_ff['FOLIO_key'], deals_ff['_event_dt'])
+    _G_pre = len(deals_ff)
+    deals_ff = deals_ff[deals_ff['_qual_send'].notna()].copy()
+    print(f"  Deals failing the {ATTRIB_MIN_MONTHS}-{ATTRIB_MAX_MONTHS} month send-to-sale rule dropped: "
+          f"{_G_pre - len(deals_ff):,} row(s)")
 # ── Fix #2: count Columns F/G by unique property (FOLIO) ─────────────────────
 # Consistent with B/C/D/E, which are all per-property. A property with several
 # lead events (e.g. a Lead later marked Dead Lead) is one property, not several.
@@ -580,9 +668,9 @@ print(f"  {len(dom):,} rows, {dom['FOLIO'].nunique():,} unique FOLIOs")
 
 dom['LIKELY DEAL SCORE']   = pd.to_numeric(dom['LIKELY DEAL SCORE'],   errors='coerce')
 dom['SCORE']               = pd.to_numeric(dom['SCORE'],               errors='coerce')
-for _col in ['MARKETING DM COUNT', 'MARKETING SMS COUNT']:
-    dom[_col] = pd.to_numeric(dom[_col] if _col in dom.columns else 0, errors='coerce').fillna(0)
-dom['total_mkt']           = dom[['MARKETING DM COUNT', 'MARKETING SMS COUNT']].max(axis=1)
+for _col in MKT_COLS:
+    dom[_col] = pd.to_numeric(dom[_col], errors='coerce').fillna(0) if _col in dom.columns else 0
+dom['total_mkt']           = dom[MKT_COLS].max(axis=1)
 dom['ACTION_DAYS']         = dom['ACTION PLANS'].apply(extract_days)
 dom['LAST SALE DATE']      = pd.to_datetime(dom['LAST SALE DATE'], errors='coerce')
 dom['buybox_int']          = pd.to_numeric(dom['PROPERTY ID (BUYBOX)'], errors='coerce')
@@ -653,13 +741,19 @@ print(f"  Column B ready — total: {sum(B_likely.values()):,}")
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 4: Column D — Sold since start of fulfillment window
 # ══════════════════════════════════════════════════════════════════════════════
-print(f"\nComputing Column D (sold since {SOLD_SINCE.strftime('%Y-%m-%d')}, fulfillment only)...")
-sold_all = dom[dom['LAST SALE DATE'] >= SOLD_SINCE].copy()
+print(f"\nComputing Column D (sold {SOLD_SINCE.strftime('%Y-%m-%d')} .. {PERIOD_END.strftime('%Y-%m-%d')}, "
+      f"{ATTRIB_MIN_MONTHS}-{ATTRIB_MAX_MONTHS} months after a send)...")
+sold_all = dom[(dom['LAST SALE DATE'] >= SOLD_SINCE) & (dom['LAST SALE DATE'] <= PERIOD_END)].copy()
 ff_join  = ff_agg[['ff_likely', 'ff_score', 'ff_days', 'ff_mkt']].reset_index()
 sold_all = sold_all.merge(ff_join, on='FOLIO', how='left')
 # Restrict to fulfillment-recommended properties only
 sold = sold_all[sold_all['ff_likely'].notna()].copy()
-print(f"  Sold since {SOLD_SINCE.strftime('%Y-%m-%d')}: {len(sold_all):,} total | In fulfillment: {len(sold):,}")
+# Sale attribution — sold 1..24 months after a send of the property
+sold['_qual_send'] = qualifying_send(sold['FOLIO'], sold['LAST SALE DATE'])
+_D_in_ff = len(sold)
+sold = sold[sold['_qual_send'].notna()].copy()
+print(f"  Sold in period: {len(sold_all):,} total | In fulfillment: {_D_in_ff:,} | "
+      f"Attributed (sold {ATTRIB_MIN_MONTHS}-{ATTRIB_MAX_MONTHS} months after a send): {len(sold):,}")
 
 sold['d_likely'] = sold['ff_likely']
 sold['d_score']  = sold['ff_score']
@@ -790,6 +884,10 @@ df['PROPERTY STATUS'] = _df_folio_key.map(_dl_status).fillna('')
 df['MARKET DEAL']     = np.where(_df_folio_key.isin(_mkt_folios), 'Yes', 'No')
 df['CLIENT LEAD']     = np.where(_df_folio_key.isin(_lead_folios), 'Yes', 'No')
 df['CLIENT DEAL']     = np.where(_df_folio_key.isin(_deal_folios), 'Yes', 'No')
+# Column D membership + the send that qualified the sale (1..24 months before it)
+_sold_send = sold.assign(_fk=sold['FOLIO'].astype(str).str.strip()).set_index('_fk')['_qual_send']
+df['SOLD (COL D)']         = np.where(_df_folio_key.isin(set(_sold_send.index)), 'Yes', 'No')
+df['QUALIFYING SEND DATE'] = _map_or_nat(_df_folio_key, _sold_send)
 # Counts below are UNIQUE FOLIOs (= report F/G membership). The compilation has
 # ~one row per FOLIO-month, so a filter on CLIENT LEAD=Yes returns more *rows*
 # than this — each flagged FOLIO repeats across the months it was recommended.
@@ -832,13 +930,13 @@ _audit_binary = [c for c in DOMAIN_DIST_MAP.keys() if c in df.columns]   # incl 
 for _c in _audit_binary + (['ABSENTEE'] if 'ABSENTEE' in df.columns else []):
     df[_c] = pd.to_numeric(df[_c], errors='coerce')
 _audit_agg = {}
-for _c in ['ADDRESS', 'ZIP', 'COUNTY', 'LAST SALE DATE', 'LEAD DATE',
-           'APPOINTMENT DATE', 'PROPERTY STATUS', 'MARKET DEAL',
-           'CLIENT LEAD', 'CLIENT DEAL']:
+for _c in ['ADDRESS', 'ZIP', 'COUNTY', 'LAST SALE DATE', 'QUALIFYING SEND DATE',
+           'SOLD (COL D)', 'LEAD DATE', 'APPOINTMENT DATE', 'PROPERTY STATUS',
+           'MARKET DEAL', 'CLIENT LEAD', 'CLIENT DEAL']:
     if _c in df.columns:
         _audit_agg[_c] = 'first'   # FOLIO-constant (mapped from per-FOLIO lookups)
 for _c in (['LIKELY DEAL SCORE', 'SCORE', 'BUYBOX SCORE', 'total_mkt',
-            'MARKETING DM COUNT', 'MARKETING SMS COUNT', 'ABSENTEE'] + _audit_binary):
+            *MKT_COLS, 'ABSENTEE'] + _audit_binary):
     if _c in df.columns:
         _audit_agg[_c] = 'max'     # "ever flagged" / strongest across the window
 if 'ACTION_DAYS' in df.columns:
@@ -1119,17 +1217,17 @@ def write_excel(path, rows, sheet_title):
             "All properties in the domain with BUYBOX SCORE > 0 — the full addressable universe.\n"
             "Likely Deal Score / Total Score: all scored properties.\n"
             "Action Plan: only properties that have an action plan assigned.\n"
-            "Mkt Count: only properties with at least 1 marketing contact (DM or SMS).\n"
+            "Mkt Count: only properties with at least 1 marketing contact (DM, SMS or Cold Calling); strongest channel.\n"
             "Distress: derived from binary domain columns; DEFAULT RISK is a direct domain column.\n"
             "Owner Occupied: ABSENTEE == 0 (NaN excluded — unknown is not owner-occupied)."
         ),
         'C': (
             "Properties in the Fulfillment\n"
             "Unique properties (by FOLIO) recommended across all fulfillment files in the "
-            "3-month analysis window.\n"
+            "analysis window.\n"
             "Scores: MAX across all months per property.\n"
             "Action Plan: best (lowest day count) across all months.\n"
-            "Mkt Count: max(total DM contacts, total SMS contacts) — strongest channel only; "
+            "Mkt Count: max(total DM, total SMS, total Cold Calling contacts) — strongest channel only; "
             "properties with 0 contacts are treated as 1 (recommended at least once).\n"
             "Distress: fulfillment binary distress columns (PRE-FORECLOSURE > 0, "
             "VACANT > 0, TAXES > 0, …) per FOLIO across all months + Default Risk "
@@ -1139,8 +1237,9 @@ def write_excel(path, rows, sheet_title):
         ),
         'D': (
             f"Sold\n"
-            f"Properties sold since {SOLD_SINCE.strftime('%b %d %Y')} that were also recommended in a fulfillment.\n"
-            f"Cutoff = start of the {WINDOW_START.strftime('%Y-%m')} – {WINDOW_END.strftime('%Y-%m')} fulfillment window.\n"
+            f"Properties sold {SOLD_SINCE.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')} (run date) that were also recommended in a fulfillment.\n"
+            f"Attribution: the sale must be {ATTRIB_MIN_MONTHS} to {ATTRIB_MAX_MONTHS} months after a date the property was sent "
+            f"(exact send date from the fulfillment filename; any send can qualify).\n"
             f"Only fulfillment-matched properties are included (domain-only sold properties excluded).\n"
             f"Scores are pre-sale fulfillment MAX values (snapshot before the sale).\n"
             f"Distress: fulfillment binary distress columns per FOLIO (same source as C); "
@@ -1162,7 +1261,7 @@ def write_excel(path, rows, sheet_title):
             "Leads, Appointments, Dead Leads, and Contracts from the Deals & Leads file "
             "that matched a fulfillment property via FOLIO.\n"
             "Status mapping: Lead, Appointment, Dead Lead, and Contract all count as a Lead here.\n"
-            "Date filter: Lead Date or Appointment Date >= client start date. "
+            f"Date filter: Lead Date or Appointment Date within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}. "
             "Blank dates are included — they cannot be ruled out.\n"
             "Contracts use Lead Date if available; blank date — always included.\n"
             "Only fulfillment-matched rows are counted. Unmatched rows are excluded.\n"
@@ -1171,14 +1270,16 @@ def write_excel(path, rows, sheet_title):
         'G': (
             "Client Deals\n"
             "Deals from the Deals & Leads file that matched a fulfillment property via FOLIO.\n"
-            "Date filter: Last Sale Date >= client start date (must have a valid date).\n"
+            "Only deals with Deal validation = Approved are counted.\n"
+            f"Date: Last Sale Date (else Deal Date) within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}, "
+            f"{ATTRIB_MIN_MONTHS} to {ATTRIB_MAX_MONTHS} months after a send of the property. Undated deals are excluded.\n"
             "Only fulfillment-matched deals are counted. Unmatched deals are excluded.\n"
             "Scores: fulfillment MAX values."
         ),
         'H': (
             "Sold Concentration %\n"
             "Formula: =D/C\n"
-            f"Share of fulfillment-recommended properties that were sold since {SOLD_SINCE.strftime('%b %d %Y')}. "
+            f"Share of fulfillment-recommended properties that were sold (Column D rules). "
             "Measures how many of the recommended properties transacted."
         ),
         'I': (
@@ -1371,6 +1472,8 @@ try:
         ff_distress_map=ff_distress_map,
         ff_abs=ff_abs,
         dist_map=DOMAIN_DIST_MAP,
+        # Column D's attributed sold set, so the companion's N == Column D
+        sold_folios=set(sold['FOLIO'].astype(str).str.strip()),
     )
 except Exception as _e:
     print(f"\n[WARN] Companion HTML/PDF report not generated: {_e}")

@@ -173,10 +173,14 @@ distribution, e.g.:
        Lead: 2,261 | Deal: 261 | Contract: 19 | Appointment: 1
 ```
 
+**Deal validation.** The deals & leads file must have a `Deal validation` column. Only deals marked
+`Approved` are counted in G. Any other value, including blank, drops the deal. If the column is
+missing, the script stops with an error instead of counting unvalidated deals.
+
 **Deal windowing.** Deals are windowed on `LAST SALE DATE` — when the property actually sold.
-Where a deal row has **no** sale date, the script falls back to `DEAL DATE` so the row is windowed
-on when the client closed it rather than being dropped as undated. Deals that *do* have a sale
-date older than the window start still fall outside the window, as before.
+Where a deal row has **no** sale date, the script falls back to `DEAL DATE`. Deals with neither are
+excluded. The date must fall inside the period (window start .. run date) **and** pass the
+send-to-sale attribution rule below.
 
 ---
 
@@ -186,7 +190,7 @@ date older than the window start still fall outside the window, as before.
 |--------|-------------|
 | B | Total Properties — all domain properties with BUYBOX SCORE > 0 |
 | C | Properties in the fulfillment — MAX aggregated metrics across the actual fulfillment window |
-| D | Sold since start of fulfillment window — properties sold from the first month with a fulfillment file onward (sold status resolved on the property the client was *recommended*, not whichever address shares the FOLIO) |
+| D | Sold — properties sold inside the period and 1–24 months after being sent in a fulfillment (sold status resolved on the property the client was *recommended*, not whichever address shares the FOLIO) |
 | E | Market Deals — investor purchases that overlap with Column D (sold properties), matched on the recommended address+ZIP |
 | F | Client Leads — leads, appointments, dead leads, and contracts matched to fulfillment, counted as **unique properties (FOLIO)** |
 | G | Client Deals — closed deals matched to fulfillment, counted as **unique properties (FOLIO)** |
@@ -232,7 +236,19 @@ batches shows roughly double the C of its neighbours; that affects C only, not D
 
 - `WINDOW_START` / `SOLD_SINCE` = first day of the earliest file's month (e.g. `2025-11-08 ...xlsx` → `2025-11-01`)
 - `WINDOW_END` = first day of the latest file's month
-- Column D ("Sold") counts properties whose `LAST SALE DATE >= SOLD_SINCE` and that were also recommended in a fulfillment
+- `PERIOD_END` = the run date. Nothing dated after it, or before `WINDOW_START`, counts in D/E/F/G
+- Every fulfillment file in the folder is used. The old "exclude the last 3 months" step is gone (2026-10-21), and the 1-month attribution lag below replaces it
+- Column D ("Sold") counts fulfillment-recommended properties whose `LAST SALE DATE` is inside the period **and** passes the attribution rule
+
+**Send-to-sale attribution (D, E, G).** A sale is credited only if it happened **1 to 24 months after a
+date the property was sent** (`ATTRIB_MIN_MONTHS` / `ATTRIB_MAX_MONTHS`). The send date is the exact
+`YYYY-MM-DD` in the fulfillment filename. Sent 2025-10-10 → a sale counts from 2025-11-10 through
+2027-10-10. Any send of the property can qualify the sale, so a property sent in 2022 and sold in
+Nov 2025 still counts if it was re-sent between Nov 2023 and Oct 2025. The qualifying send is written
+to `QUALIFYING SEND DATE` (and Column D membership to `SOLD (COL D)`) in the audit files. Leads (F)
+use only the in-period rule.
+
+**Mkt Count** = strongest single channel of DM / SMS / Cold Calling (`MARKETING CC COUNT`), not their sum.
 
 | Earliest file in folder | `SOLD_SINCE` |
 |---|---|
