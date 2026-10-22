@@ -69,6 +69,12 @@ Rows whose `COUNTY` matches (case-insensitive) are dropped from the fulfillments
 on load, so they count in no column (B–G). Use it when a county left the client's buybox but still
 appears in older fulfillment files. Clear it (`set()`) when switching clients.
 
+```python
+UNIQUE_DISTRESS_SHEET = True   # client-specific add-on (Jerry Buys Houses); False by default for others
+```
+
+Adds a second sheet, **Unique Distress**, to the report — see *Unique Distress sheet* below.
+
 ### Where `CLIENT_START_DATE` comes from — look it up, never infer it
 
 **Every run, pull the date from the 8020REI client record via the Clients Data MCP:**
@@ -219,6 +225,29 @@ Total row — each property falls in exactly one bucket / zip, so the ZIP total 
 totals. **Distress and Month have no Total row:** a property can carry several distress types, and
 Month's Column C counts a property in every month it was sent, so a sum would overstate the number
 of properties.
+
+### Unique Distress sheet (optional — `UNIQUE_DISTRESS_SHEET`)
+
+A second sheet with the same B–K columns, one row per distress, counting the properties whose
+**only** distress is that one (e.g. *High Equity* = high equity and no other distress). A property
+with two or more distresses is in no row. Owner Occupied is **not** a distress (it is the absence of
+Absentee), so it gets no row and doesn't disqualify a property; Absentee and Absentee Out of State do
+count. Rows are mutually exclusive, so the sheet has a Total (= properties with exactly one distress).
+
+Populations and distress sources are the main sheet's: B from the domain flags, C–G from the
+fulfillment flags + Default Risk + fulfillment ABSENTEE. C/E/F/G reproduce from
+`Fulfillment_Audit.xlsx` (count properties with exactly one flag set). **Column B overstates** on this
+sheet: the domain records fewer distress flags than the fulfillments, so many domain properties look
+single-distress only because their other flags are missing — the sheet's B note says so.
+
+Requested by Jerry Buys Houses (2026-10-22), modelled on the "only High Equity" question from IBUYOHIO.
+
+### Column header notes
+
+Every column header carries a hover note (Excel comment) written for a client reading the report
+for the first time — what the column counts, which properties are in it, the actual dates — with
+no internal terms (FOLIO, MAX, domain, binary columns). The Unique Distress sheet overrides the A and
+B notes. Keep that style when a rule changes: update the note in `_fill_sheet` in plain language.
 
 ### Month section — by event month
 

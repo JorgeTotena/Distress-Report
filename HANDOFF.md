@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-10-22 — Jerry Buys Houses; deals dated by the **later of LAST SALE DATE / DEAL DATE** (Fix 17); **`EXCLUDED_COUNTIES`** drops counties that left the buybox (Livingston for Jerry) from fulfillments + domain (Fix 18); **no Total row under Distress and Month** (Fix 19); missing May/Aug 2025 + Mar 2026 fulfillments added
+**Last updated:** 2026-10-22 — Jerry Buys Houses; **Unique Distress sheet** (properties with ONLY one distress, behind `UNIQUE_DISTRESS_SHEET`, Fix 20); **column header notes rewritten in plain language** for clients (Fix 21). Earlier today: deals dated by the later of LAST SALE DATE / DEAL DATE (Fix 17); `EXCLUDED_COUNTIES` (Livingston, Fix 18); no Total row under Distress and Month (Fix 19); missing May/Aug 2025 + Mar 2026 fulfillments added
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -334,6 +334,21 @@ removed. Likely Deal Score / Total Score / Action Plan / Mkt Count / **ZIP Code*
 property falls in exactly one bucket / zip; the ZIP total equals the column totals). Column A's header
 note explains this.
 
+### Fix 20 — Unique Distress sheet (client-specific: `UNIQUE_DISTRESS_SHEET`)
+Jerry asked how many properties had a **single** distress (like IBUYOHIO's "only High Equity"). A second
+sheet, *Unique Distress*, counts per distress the properties whose only distress is that one, with the
+same B–K columns and populations as the main sheet. Owner Occupied is not a distress. Rows are mutually
+exclusive, so the sheet keeps a Total. `write_excel` now takes a list of sheets; `_fill_sheet` writes one.
+
+Jerry (Oct 2026) — exactly one distress: B 124,402 | C 13,321 | D 445 | E 50 | F 36 | G 5. C/E/F/G were
+cross-checked against `Fulfillment_Audit.xlsx` with zero mismatches. B is inflated (domain flags are
+sparse — B "only High Equity" 119,835 vs C 6,711); the sheet's B note warns about it.
+
+### Fix 21 — Column header notes rewritten for clients
+All A–K header comments rewritten in plain language (no FOLIO / MAX / domain / binary-column terms),
+with actual dates, and the comment box is sized to its text. `_fill_sheet(ws, rows, note_overrides)`
+lets a sheet replace individual notes (the Unique Distress sheet overrides A and B).
+
 ## Open / Decided Issues
 
 | Issue | Status | Decision |
@@ -360,6 +375,8 @@ note explains this.
 | Deal LAST SALE DATE is a prior owner's sale | ✅ Decided 2026-10-22 | Use the later of LAST SALE DATE / DEAL DATE (Fix 17) |
 | County no longer in the client's buybox | ✅ Decided 2026-10-22 | Exclude via `EXCLUDED_COUNTIES` (Fix 18) |
 | Distress / Month Total rows overstate properties | ✅ Decided 2026-10-22 | Removed; ZIP Total kept (Fix 19) |
+| Properties with a single distress (Jerry) | ✅ Built 2026-10-22 | Unique Distress sheet; Owner Occupied not a distress (Fix 20) |
+| Header notes too technical for clients | ✅ Fixed 2026-10-22 | Plain-language rewrite (Fix 21) |
 
 ---
 
@@ -397,7 +414,7 @@ note explains this.
 | Deals/Leads file | `Documents/` (auto-discovered; `Deal validation` column required) |
 | Market Deals file | `Market Deals/Jerrybuyhouses Market Deals.xlsx` (no PropertyID → address+ZIP fallback) |
 | Fulfillment window | Jan 2025 – Sep 2026 (21 months, 21 xlsx files — May/Aug 2025 and Mar 2026 added 2026-10-22) |
-| Excel sections | Full report (all sections, incl. Month + ZIP) |
+| Excel sections | Full report (all sections, incl. Month + ZIP) + **Unique Distress** sheet |
 
 
 > **Pull `CLIENT_START_DATE` from the Clients Data MCP every run — never infer it.**
@@ -418,3 +435,4 @@ Four variables at the top of `build_domain_report.py` must be updated when switc
 - `CLIENT_START_DATE` — date the client started with 8020REI
 - `MARKET_PATH` — path to the client's market deals file
 - `EXCLUDED_COUNTIES` — counties no longer in the client's buybox (`set()` for none)
+- `UNIQUE_DISTRESS_SHEET` — `True` only for clients who asked for the Unique Distress sheet

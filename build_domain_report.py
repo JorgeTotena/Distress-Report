@@ -25,6 +25,8 @@ LAST SALE DATE and DEAL DATE (LAST SALE DATE can be a prior owner's sale).
 Excluded counties: properties in EXCLUDED_COUNTIES (no longer in the client's buybox) are dropped
 from the fulfillments and the domain on load, so they count in no column.
 Section totals: Distress and Month have no Total row (a property can appear in several rows).
+UNIQUE_DISTRESS_SHEET (client-specific): adds a "Unique Distress" sheet counting, per distress,
+the properties whose ONLY distress is that one.
 Mkt Count: strongest channel of DM / SMS / Cold Calling (not combined).
 Deals/Leads: any .xlsx in Documents/ whose name contains "leads" or "deals" (case-insensitive).
 """
@@ -62,6 +64,14 @@ print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/de
 # so they count nowhere (B–G). Match is case-insensitive on COUNTY.
 # Jerry Buys Houses: Livingston left the buybox (confirmed 2026-10-22).
 EXCLUDED_COUNTIES = {'LIVINGSTON'}
+
+# ── Unique-distress sheet (client-specific add-on) ───────────────────────────
+# True adds a second sheet counting, per distress, the properties whose ONLY
+# distress is that one (e.g. High Equity and nothing else), with the same B–K
+# columns and populations as the main sheet. Owner Occupied is not treated as a
+# distress (it is the absence of Absentee). Requested by Jerry Buys Houses
+# (2026-10-22); set False for other clients unless they ask for it.
+UNIQUE_DISTRESS_SHEET = True
 
 # ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────
 # Leave False for the standard full report (all five sections).
@@ -129,8 +139,9 @@ COLS = [
 ]
 ZIP_SECTION_TITLE   = 'ZIP Code — most Client Deals first (BUYBOX SCORE > 0)'
 MONTH_SECTION_TITLE = 'Month — by event month (chronological)'
+UNIQUE_SECTION_TITLE = 'Unique Distress — properties with ONLY this distress'
 SECTION_NAMES = {'Likely Deal Score', 'Total Score', 'Action Plan', 'Mkt Count', 'Distress',
-                 MONTH_SECTION_TITLE, ZIP_SECTION_TITLE}
+                 MONTH_SECTION_TITLE, ZIP_SECTION_TITLE, UNIQUE_SECTION_TITLE}
 
 # ── Default Risk lookup — derived from domain (DEFAULT RISK column) ───────────
 # Loaded early so dr_folios is available for fulfillment injection (STEP 1)
@@ -1196,10 +1207,8 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP 7: Write Excel with formulas for H–K
 # ══════════════════════════════════════════════════════════════════════════════
-def write_excel(path, rows, sheet_title):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_title
+def _fill_sheet(ws, rows, note_overrides=None):
+    """Write one report sheet (header, notes, rows, H–K formulas, highlights)."""
 
     # Styles
     header_font   = Font(name='Helvetica', bold=True, size=10, color='FFFFFF')
@@ -1226,118 +1235,112 @@ def write_excel(path, rows, sheet_title):
         cell.alignment = header_align; cell.border = thin
     ws.row_dimensions[1].height = 36
 
-    # Header comments — one per column, visible as hover tooltips in Excel
+    # Header comments — one per column, visible as hover tooltips in Excel.
+    # Written for someone reading the report for the first time: what the column
+    # counts, which properties are in it, and how to read its sections.
+    _excl  = ', '.join(sorted(c.title() for c in EXCLUDED_COUNTIES))
+    _excl_line = (f"Properties in {_excl} County are left out of every column — the county is no "
+                  f"longer part of the buy box.\n" if EXCLUDED_COUNTIES else "")
+    _period = f"{WINDOW_START.strftime('%b %d, %Y')} and {PERIOD_END.strftime('%b %d, %Y')}"
     header_comments = {
         'A': (
             "Category\n"
-            "Row labels for each section. Section headers: Likely Deal Score, Total Score, "
-            "Action Plan, Mkt Count, Distress, Month, ZIP Code. Sub-rows are the range buckets, "
-            "distress types, months or zips within each section.\n"
-            "Total rows: Likely Deal Score, Total Score, Action Plan, Mkt Count and ZIP Code. "
-            "Distress and Month have no Total — a property can carry several distress types, "
-            "and Column C counts a property in every month it was sent, so a sum would count "
-            "properties more than once."
+            "How each row groups the properties. The report has these sections:\n"
+            "• Likely Deal Score / Total Score — 8020REI's scores, in ranges (higher = more likely to sell).\n"
+            "• Action Plan — how soon 8020REI recommended reaching out (30, 60 or 90 days).\n"
+            "• Mkt Count — how many times the property was marketed on its busiest channel "
+            "(Direct Mail, SMS or Cold Calling).\n"
+            "• Distress — the distress signals on the property (pre-foreclosure, vacant, high equity, …).\n"
+            "• Month — what happened each month.\n"
+            "• ZIP Code — results per zip, zips with the most client deals first.\n"
+            "Every number is a count of properties (not of records or mailings).\n"
+            "Total rows: a property can have several distresses, so it can show up in several "
+            "Distress rows; and it is counted in every Month it was sent. Adding those rows up "
+            "would count the same property more than once, so Distress and Month have no Total. "
+            "The other sections do."
         ),
         'B': (
             "Total Properties\n"
-            "All properties in the domain with BUYBOX SCORE > 0 — the full addressable universe.\n"
-            + (f"Excluded counties (no longer in the buybox): {', '.join(sorted(c.title() for c in EXCLUDED_COUNTIES))} — not counted in any column.\n"
-               if EXCLUDED_COUNTIES else "") +
-            "Likely Deal Score / Total Score: all scored properties.\n"
-            "Action Plan: only properties that have an action plan assigned.\n"
-            "Mkt Count: only properties with at least 1 marketing contact (DM, SMS or Cold Calling); strongest channel.\n"
-            "Distress: derived from binary domain columns; DEFAULT RISK is a direct domain column.\n"
-            "Owner Occupied: ABSENTEE == 0 (NaN excluded — unknown is not owner-occupied)."
+            "Every property in your market that fits your buy box, whether or not it was ever sent "
+            "to you. This is the full pool of possible properties, from 8020REI's property database.\n"
+            + _excl_line +
+            "Action Plan and Mkt Count only include properties that have an action plan or were "
+            "marketed, so those totals are smaller.\n"
+            "Distress here comes from the property database, which records fewer distress signals "
+            "than the monthly lists (columns C–G use the monthly lists)."
         ),
         'C': (
-            "Properties in the Fulfillment\n"
-            "Unique properties (by FOLIO) recommended across all fulfillment files in the "
-            "analysis window.\n"
-            + (f"Properties in {', '.join(sorted(c.title() for c in EXCLUDED_COUNTIES))} are excluded.\n"
-               if EXCLUDED_COUNTIES else "") +
-            "Scores: MAX across all months per property.\n"
-            "Action Plan: best (lowest day count) across all months.\n"
-            "Mkt Count: max(total DM, total SMS, total Cold Calling contacts) — strongest channel only; "
-            "properties with 0 contacts are treated as 1 (recommended at least once).\n"
-            "Distress: fulfillment binary distress columns (PRE-FORECLOSURE > 0, "
-            "VACANT > 0, TAXES > 0, …) per FOLIO across all months + Default Risk "
-            "cross-referenced from domain.\n"
-            "Absentee / Absentee Out of State / Owner Occupied: fulfillment ABSENTEE "
-            "code (0/1/2), max across months per FOLIO."
+            "Properties in the fulfillment\n"
+            "Properties 8020REI sent you in your monthly lists (fulfillments) during the analysis "
+            "period. A property sent in several months is counted once.\n"
+            + _excl_line +
+            "When a property was sent more than once, the report uses its highest score, its most "
+            "urgent action plan, its busiest marketing channel, and every distress it ever had "
+            "across those months.\n"
+            "This column is the base for the percentages in columns H–K."
         ),
         'D': (
-            f"Sold\n"
-            f"Properties sold {SOLD_SINCE.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')} (run date) that were also recommended in a fulfillment.\n"
-            f"Attribution: the sale must be {ATTRIB_MIN_MONTHS} to {ATTRIB_MAX_MONTHS} months after a date the property was sent "
-            f"(exact send date from the fulfillment filename; any send can qualify).\n"
-            f"Only fulfillment-matched properties are included (domain-only sold properties excluded).\n"
-            f"Scores are pre-sale fulfillment MAX values (snapshot before the sale).\n"
-            f"Distress: fulfillment binary distress columns per FOLIO (same source as C); "
-            f"ABSENTEE (Absentee / Out of State / Owner Occupied) = fulfillment ABSENTEE, max across months."
+            "Sold\n"
+            f"Properties from your lists (column C) that sold between {_period} (today).\n"
+            f"A sale only counts if it happened between {ATTRIB_MIN_MONTHS} and {ATTRIB_MAX_MONTHS} "
+            "months after the property was sent to you — close enough that the list could have "
+            "made a difference.\n"
+            "Scores and distresses are the ones the property had when it was sent, before the sale."
         ),
         'E': (
             "Market Deals\n"
-            "Properties believed to have been bought at a significant discount — typically bought and resold "
-            "for a profit in a short period of time. These represent investor market transactions that "
-            "overlapped with properties the client was recommended.\n"
-            "Source: properties that appear in both the Market Deals file and the fulfillment-sold subset.\n"
-            "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX); when the file has "
-            "no PropertyID, matched on normalized ADDRESS + ZIP.\n"
-            "Scores: pre-sale fulfillment MAX values (same as Column D).\n"
-            "Distress: fulfillment binary distress columns per FOLIO (same source as C/D); "
-            "ABSENTEE (Absentee / Out of State / Owner Occupied) = fulfillment ABSENTEE, max across months."
+            "Sold properties from column D that were bought by an investor — typically bought "
+            "at a significant discount and resold for a profit shortly after.\n"
+            "These are deals another buyer closed on properties that were on your lists."
         ),
         'F': (
             "Clients Lead\n"
-            "Leads, Appointments, Dead Leads, and Contracts from the Deals & Leads file "
-            "that matched a fulfillment property via FOLIO.\n"
-            "Status mapping: Lead, Appointment, Dead Lead, and Contract all count as a Lead here.\n"
-            f"Date filter: Lead Date or Appointment Date within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}. "
-            "Blank dates are included — they cannot be ruled out.\n"
-            "Contracts use Lead Date if available; blank date — always included.\n"
-            "Only fulfillment-matched rows are counted. Unmatched rows are excluded.\n"
-            "Scores: fulfillment MAX values. Mkt: 0 contacts treated as 1."
+            "Properties from your lists (column C) that became a lead in your CRM: leads, "
+            "appointments, contracts and dead leads all count.\n"
+            f"The lead must be dated between {_period}. Leads with no date are included, since "
+            "they can't be ruled out.\n"
+            "A property with several lead records is counted once."
         ),
         'G': (
             "Client Deals\n"
-            "Deals from the Deals & Leads file that matched a fulfillment property via FOLIO.\n"
-            "Only deals with Deal validation = Approved are counted.\n"
-            f"Date: later of Last Sale Date / Deal Date within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}, "
-            f"{ATTRIB_MIN_MONTHS} to {ATTRIB_MAX_MONTHS} months after a send of the property. Undated deals are excluded.\n"
-            "Only fulfillment-matched deals are counted. Unmatched deals are excluded.\n"
-            "Scores: fulfillment MAX values."
+            "Properties from your lists (column C) that you closed as a deal.\n"
+            "Only deals approved in 8020REI's deal validation are counted.\n"
+            f"The deal must be dated between {_period}, and {ATTRIB_MIN_MONTHS}–{ATTRIB_MAX_MONTHS} "
+            "months after the property was sent to you. The deal is dated by when you closed it "
+            "(or the recorded sale, if that is later).\n"
+            "A property is counted once."
         ),
         'H': (
             "Sold Concentration %\n"
-            "Formula: =D/C\n"
-            f"Share of fulfillment-recommended properties that were sold (Column D rules). "
-            "Measures how many of the recommended properties transacted."
+            "Sold ÷ Properties in the fulfillment (D ÷ C).\n"
+            "Out of the properties on your lists in this row, the share that sold. A higher % "
+            "means that group of properties is more likely to sell."
         ),
         'I': (
-            "Sold to Investors Concentration\n"
-            "Formula: =E/C\n"
-            "Share of fulfillment-recommended properties that were sold to investors (market deals). "
-            "Measures investor acquisition rate within the fulfillment population."
+            "Sold to investors concentration\n"
+            "Market Deals ÷ Properties in the fulfillment (E ÷ C).\n"
+            "Out of the properties on your lists in this row, the share an investor bought — "
+            "the deals your competition closed."
         ),
         'J': (
             "Client Deals Concentration\n"
-            "Formula: =G/C\n"
-            "Share of fulfillment-recommended properties that resulted in a client deal. "
-            "Measures deal conversion rate within the fulfillment population."
+            "Client Deals ÷ Properties in the fulfillment (G ÷ C).\n"
+            "Out of the properties on your lists in this row, the share you turned into a deal."
         ),
         'K': (
             "Client Leads Concentration\n"
-            "Formula: =F/C\n"
-            "Share of fulfillment-recommended properties that generated a client lead "
-            "(includes Leads, Appointments, Dead Leads, and Contracts). "
-            "Measures lead engagement rate within the fulfillment population."
+            "Clients Lead ÷ Properties in the fulfillment (F ÷ C).\n"
+            "Out of the properties on your lists in this row, the share that became a lead."
         ),
     }
+    header_comments.update(note_overrides or {})
     for col_letter, text in header_comments.items():
         cell = ws[f'{col_letter}1']
         cmt = Comment(text, "Atlas Report")
-        cmt.width  = 400
-        cmt.height = 200
+        # Size the box to the text so nothing is cut off (~60 characters per line)
+        _lines = sum(max(1, -(-len(_ln) // 60)) for _ln in text.split('\n'))
+        cmt.width  = 420
+        cmt.height = max(120, 18 * _lines + 20)
         cell.comment = cmt
 
 
@@ -1406,7 +1409,8 @@ def write_excel(path, rows, sheet_title):
     hi_font = Font(name='Helvetica', bold=True, size=10, color='006100')
     lo_fill = PatternFill('solid', fgColor='FFC7CE')   # light red
     lo_font = Font(name='Helvetica', bold=True, size=10, color='9C0006')
-    THREE_EACH = {'Distress', MONTH_SECTION_TITLE, ZIP_SECTION_TITLE}   # rest get top/bottom 1
+    THREE_EACH = {'Distress', MONTH_SECTION_TITLE, ZIP_SECTION_TITLE,   # rest get top/bottom 1
+                  UNIQUE_SECTION_TITLE}
 
     sections, current = [], None
     for i, row_data in enumerate(rows):
@@ -1452,6 +1456,15 @@ def write_excel(path, rows, sheet_title):
         ws.column_dimensions[col_letter].width = 22
     ws.freeze_panes = 'A2'
 
+
+def write_excel(path, sheets):
+    """sheets: list of (sheet_title, rows, note_overrides) — first one is the main sheet."""
+    wb = Workbook()
+    for _i, (sheet_title, sheet_rows, note_overrides) in enumerate(sheets):
+        ws = wb.active if _i == 0 else wb.create_sheet()
+        ws.title = sheet_title
+        _fill_sheet(ws, sheet_rows, note_overrides)
+
     # Resilient save — if the report is open in Excel (lock), fall back to an
     # alternate name and warn rather than aborting after the heavy compute.
     path = Path(path)
@@ -1479,8 +1492,83 @@ rows = build_rows(
     zip_rows=zip_table,
 )
 
+sheets = [("Max Logic - BCDEFG", rows, None)]
+
+# ── Unique-distress sheet: properties whose ONLY distress is the row's one ──
+# Same populations and distress sources as the main sheet: B from the domain
+# flags (dom_b), C–G from the fulfillment flags + Default Risk (dist_long) and
+# fulfillment ABSENTEE (ff_abs). Owner Occupied is not a distress, so it neither
+# gets a row nor disqualifies a property. Rows are mutually exclusive, so the
+# Total is the number of properties with exactly one distress.
+if UNIQUE_DISTRESS_SHEET:
+    print("\nComputing unique-distress sheet...")
+    _uniq_types = [d for d in distress_order if d != 'Owner Occupied']
+
+    # C–G: one row per (FOLIO, distress) → FOLIOs with exactly one distress
+    _ff_long = pd.concat([
+        dist_long.assign(FOLIO=dist_long['FOLIO'].astype(str).str.strip()),
+        pd.DataFrame({'FOLIO': ff_abs.index[ff_abs == 1], 'dtype': 'Absentee'}),
+        pd.DataFrame({'FOLIO': ff_abs.index[ff_abs == 2], 'dtype': 'Absentee Out of State'}),
+    ], ignore_index=True).drop_duplicates()
+    _ff_n   = _ff_long.groupby('FOLIO')['dtype'].transform('size')
+    ff_only = _ff_long[_ff_n == 1].set_index('FOLIO')['dtype']
+
+    def _ff_unique_counts(folios):
+        idx = pd.Series(list(folios)).dropna().astype(str).str.strip().unique()
+        vc  = ff_only.reindex(idx).value_counts()
+        return {d: int(vc.get(d, 0)) for d in _uniq_types}
+
+    # B: domain flags per property (dom_b is one row per FOLIO)
+    _flags = pd.DataFrame(index=dom_b.index)
+    for _col, _label in DOMAIN_DIST_MAP.items():
+        if _col in dom_b.columns:
+            _flags[_label] = pd.to_numeric(dom_b[_col], errors='coerce').fillna(0) > 0
+    if 'ABSENTEE' in dom_b.columns:
+        _abs = pd.to_numeric(dom_b['ABSENTEE'], errors='coerce')
+        _flags['Absentee']              = _abs == 1
+        _flags['Absentee Out of State'] = _abs == 2
+    _one = _flags[_flags.sum(axis=1) == 1]
+    B_uniq = {d: int(_one[d].sum()) if d in _one.columns else 0 for d in _uniq_types}
+
+    C_uniq = _ff_unique_counts(ff_agg.index)
+    D_uniq = _ff_unique_counts(sold['FOLIO'])
+    E_uniq = _ff_unique_counts(mkt_sold['FOLIO'])
+    F_uniq = _ff_unique_counts(leads_ff['FOLIO_key'])
+    G_uniq = _ff_unique_counts(deals_ff['FOLIO_key'])
+
+    _cols = [B_uniq, C_uniq, D_uniq, E_uniq, F_uniq, G_uniq]
+    uniq_rows = [list(COLS)]
+    uniq_rows[0][0] = UNIQUE_SECTION_TITLE
+    for d in _uniq_types:
+        uniq_rows.append([d] + [c[d] for c in _cols] + [''] * 4)
+    uniq_rows.append(['Total'] + [sum(c.values()) for c in _cols] + [''] * 4)
+    print("  Exactly-one-distress properties — " +
+          " | ".join(f"{k}: {sum(c.values()):,}" for k, c in zip('BCDEFG', _cols)))
+
+    sheets.append(("Unique Distress", uniq_rows, {
+        'A': (
+            "Category — Unique Distress\n"
+            "Each row counts the properties whose ONLY distress is that one. Example: the "
+            "'High Equity' row counts properties that have high equity and no other distress.\n"
+            "A property with two or more distresses is not counted in any row.\n"
+            "Owner-occupied is not treated as a distress — an owner-occupied property whose only "
+            "distress is high equity counts under High Equity.\n"
+            "Each property can appear in only one row, so the Total is the number of properties "
+            "with exactly one distress.\n"
+            "Columns B–K mean the same as on the main sheet."
+        ),
+        'B': (
+            "Total Properties\n"
+            "Every property in your market that fits your buy box, from 8020REI's property database.\n"
+            "Read this column with care here: the property database records fewer distress signals "
+            "than the monthly lists, so many properties look like they have a single distress only "
+            "because their other distresses aren't recorded there. Treat it as an upper bound and "
+            "compare columns C–G, which use the monthly lists."
+        ),
+    }))
+
 print(f"\nWriting report...")
-write_excel(OUTPUT, rows, "Max Logic - BCDEFG")
+write_excel(OUTPUT, sheets)
 print("\nAll done.")
 
 # ══════════════════════════════════════════════════════════════════════════════
