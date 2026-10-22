@@ -20,7 +20,11 @@ dated after it (or before WINDOW_START) is counted in D/E/F/G.
 Sale attribution (D/E/G): a sale counts only if the property was sent in a fulfillment at least
 1 month and at most 24 months before the sale date (exact send date from the filename; any send
 of the property can qualify the sale).
-Client Deals (G): only rows whose "Deal validation" column is "Approved".
+Client Deals (G): only rows whose "Deal validation" column is "Approved", dated by the later of
+LAST SALE DATE and DEAL DATE (LAST SALE DATE can be a prior owner's sale).
+Excluded counties: properties in EXCLUDED_COUNTIES (no longer in the client's buybox) are dropped
+from the fulfillments and the domain on load, so they count in no column.
+Section totals: Distress and Month have no Total row (a property can appear in several rows).
 Mkt Count: strongest channel of DM / SMS / Cold Calling (not combined).
 Deals/Leads: any .xlsx in Documents/ whose name contains "leads" or "deals" (case-insensitive).
 """
@@ -40,18 +44,24 @@ COMPILED_PATH     = BASE / "Fulfillment_Compilation.xlsx"   # written each run f
 AUDIT_PATH        = BASE / "Fulfillment_Audit.xlsx"          # deduped one-row-per-FOLIO audit (fits Excel)
 DOCS_DIR          = BASE / "Documents"
 DOMAIN_DIR        = BASE / "Domain Full Data"
-MARKET_PATH       = BASE / "Market Deals" / "Market Deals IBUYOhio.xlsx"
-CLIENT_NAME       = "IBUYOHIO"
+MARKET_PATH       = BASE / "Market Deals" / "Jerrybuyhouses Market Deals.xlsx"
+CLIENT_NAME       = "Jerry Buys Houses"
 OUTPUT            = BASE / f"{CLIENT_NAME} - Distress Report - {pd.Timestamp.today().strftime('%Y-%m')}.xlsx"
 # DR_PATH removed — DEFAULT RISK is now a column in the domain file
 
 # ── Client start date (used to filter leads and deals) ───────────────────────
-# IBuyOhio (client ID 1882) — "Client Since" per the 8020REI client record;
-# onboarded 2025-03-19, first fulfillment 2025-03-17. Do NOT infer this from the
+# Jerry Buys Houses (client ID 1807) — "Client Since" per the 8020REI client record;
+# onboarded 2025-01-28, first fulfillment 2025-01-28. Do NOT infer this from the
 # leads & deals file: client CRM exports can carry pre-8020REI deal history.
 # Informational only: leads/deals are filtered to the fulfillment window start, not this.
-CLIENT_START_DATE = pd.to_datetime("2025-03-12")
+CLIENT_START_DATE = pd.to_datetime("2025-01-16")
 print(f"Client since {CLIENT_START_DATE.date()} (informational only — leads/deals are filtered to the fulfillment window start, computed below)")
+
+# ── Counties no longer in the client's buybox ────────────────────────────────
+# Rows in these counties are dropped from the fulfillments and the domain on load,
+# so they count nowhere (B–G). Match is case-insensitive on COUNTY.
+# Jerry Buys Houses: Livingston left the buybox (confirmed 2026-10-22).
+EXCLUDED_COUNTIES = {'LIVINGSTON'}
 
 # ── Section filter — set True to include ONLY Distress + ZIP in the Excel ────
 # Leave False for the standard full report (all five sections).
@@ -330,6 +340,11 @@ for _f in _ff_files:
 
 df = pd.concat(_parts, ignore_index=True)
 print(f"  Total: {len(df):,} rows, {df['FOLIO'].nunique():,} unique FOLIOs")
+if EXCLUDED_COUNTIES:
+    _excl = df['COUNTY'].astype(str).str.strip().str.upper().isin(EXCLUDED_COUNTIES)
+    print(f"  Excluded counties {sorted(EXCLUDED_COUNTIES)}: dropped {int(_excl.sum()):,} rows "
+          f"({df.loc[_excl, 'FOLIO'].nunique():,} FOLIOs)")
+    df = df[~_excl].reset_index(drop=True)
 # Compilation file is written at the end of STEP 5, after enrichment with
 # LAST SALE DATE, PROPERTY STATUS, and MARKET DEAL flag for validation.
 
@@ -516,17 +531,20 @@ else:
     dl.loc[dl['PROPERTY STATUS'] == 'Appointment', '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Appointment', 'APPOINTMENT DATE'], errors='coerce')
     dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Dead Lead',   'LEAD DATE'],        errors='coerce')
     dl.loc[dl['PROPERTY STATUS'] == 'Contract',    '_date_col'] = pd.to_datetime(dl.loc[dl['PROPERTY STATUS'] == 'Contract',    'LEAD DATE'],        errors='coerce')
-    # Deals are windowed on LAST SALE DATE (when the property actually sold).
-    # Where the client export has no sale date, fall back to DEAL DATE so the row
-    # is windowed on when the client closed it rather than being dropped as undated.
+    # Deals are windowed on the later of LAST SALE DATE and DEAL DATE. LAST SALE DATE
+    # can be a prior owner's sale (years before the client's deal), so a later DEAL
+    # DATE wins; a blank sale date also falls back to DEAL DATE.
     _is_deal   = dl['PROPERTY STATUS'] == 'Deal'
     _deal_date = pd.to_datetime(dl.loc[_is_deal, 'LAST SALE DATE'], errors='coerce')
     if 'DEAL DATE' in dl.columns:
-        _fallback = pd.to_datetime(dl.loc[_is_deal, 'DEAL DATE'], errors='coerce')
-        _n_filled = (_deal_date.isna() & _fallback.notna()).sum()
-        _deal_date = _deal_date.fillna(_fallback)
+        _dd = pd.to_datetime(dl.loc[_is_deal, 'DEAL DATE'], errors='coerce')
+        _n_filled = (_deal_date.isna() & _dd.notna()).sum()
+        _n_later  = (_deal_date.notna() & (_dd > _deal_date)).sum()
+        _deal_date = pd.concat([_deal_date, _dd], axis=1).max(axis=1)
         if _n_filled:
             print(f"    Deals with no LAST SALE DATE -> windowed on DEAL DATE: {_n_filled:,}")
+        if _n_later:
+            print(f"    Deals with DEAL DATE later than LAST SALE DATE -> windowed on DEAL DATE: {_n_later:,}")
     dl.loc[_is_deal, '_date_col'] = _deal_date
     _lead_types = dl['PROPERTY STATUS'].isin({'Lead', 'Appointment', 'Dead Lead', 'Contract'})
     _in_period  = (dl['_date_col'] >= LEADS_DEALS_SINCE) & (dl['_date_col'] <= PERIOD_END)
@@ -605,7 +623,7 @@ def compute_col_counts(sub_df):
 
 leads_ff = dl[(dl['PROPERTY STATUS'] == 'Lead') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
 deals_ff = dl[(dl['PROPERTY STATUS'] == 'Deal') & (dl['Data_Source'] == 'Fulfillment')].copy() if 'PROPERTY STATUS' in dl.columns else dl.iloc[0:0].copy()
-# Sale attribution — the deal's date (LAST SALE DATE, else DEAL DATE) must fall
+# Sale attribution — the deal's date (later of LAST SALE DATE / DEAL DATE) must fall
 # 1..24 months after a send of the property.
 if len(deals_ff):
     deals_ff['_qual_send'] = qualifying_send(deals_ff['FOLIO_key'], deals_ff['_event_dt'])
@@ -674,6 +692,10 @@ dom['total_mkt']           = dom[MKT_COLS].max(axis=1)
 dom['ACTION_DAYS']         = dom['ACTION PLANS'].apply(extract_days)
 dom['LAST SALE DATE']      = pd.to_datetime(dom['LAST SALE DATE'], errors='coerce')
 dom['buybox_int']          = pd.to_numeric(dom['PROPERTY ID (BUYBOX)'], errors='coerce')
+if EXCLUDED_COUNTIES:
+    _excl = dom['COUNTY'].astype(str).str.strip().str.upper().isin(EXCLUDED_COUNTIES)
+    print(f"  Excluded counties {sorted(EXCLUDED_COUNTIES)}: dropped {int(_excl.sum()):,} domain rows")
+    dom = dom[~_excl].reset_index(drop=True)
 
 # Dedupe by FOLIO — domain has ~167K duplicate FOLIO rows that would otherwise
 # inflate Column B / D / E counts. Keep the row with the most recent LAST SALE DATE
@@ -1022,7 +1044,7 @@ print(f"  ZIP block: {len(zip_table):,} zips "
 #   D — the month the property sold          (LAST SALE DATE)
 #   E — the month the market-deal property sold (LAST SALE DATE)
 #   F — the month that qualified the lead    (_event_dt, same date the window used)
-#   G — the month that qualified the deal    (_event_dt: LAST SALE DATE, else DEAL DATE)
+#   G — the month that qualified the deal    (_event_dt: later of LAST SALE DATE / DEAL DATE)
 #
 # D/E/F/G reconcile exactly to the report's Column D/E/F/G totals. Column C does NOT:
 # a FOLIO recommended in five months is counted in all five, so the C column sums
@@ -1144,21 +1166,21 @@ def build_rows(B_lik, B_sco, B_act, B_mkt, B_dis,
     rows.append(section_header('Distress'))
     for dtype in distress_order:
         rows.append(data_row(dtype, B_dis[dtype], C_dis[dtype], D_dis[dtype], E_dis[dtype], F_dis[dtype], G_dis[dtype]))
-    rows.append(data_row('Total', sum(B_dis.values()), sum(C_dis.values()), sum(D_dis.values()), sum(E_dis.values()), sum(F_dis.values()), sum(G_dis.values())))
+    # No Total row: a property can carry several distress types, so summing the
+    # rows counts it more than once and overstates the number of properties.
 
     # ── Month block — one row per event month, chronological ───────────────────
-    # Sits between Distress and ZIP. B is blank (no month dimension); C counts a
-    # FOLIO once per month it was recommended, so only D/E/F/G tie to the totals.
+    # Sits between Distress and ZIP. B is blank (no month dimension). No Total row:
+    # C counts a FOLIO once per month it was recommended, so its sum overstates
+    # the number of properties.
     if month_rows:
         rows.append(blank())
         rows.append(section_header(MONTH_SECTION_TITLE))
-        tC = tD = tE = tF = tG = 0
         for label, b, c, d, e, f, g in month_rows:
             rows.append(data_row(label, b, c, d, e, f, g))
-            tC += c; tD += d; tE += e; tF += f; tG += g
-        rows.append(data_row('Total', '', tC, tD, tE, tF, tG))
 
     # ── ZIP Code block — one row per zip, ordered by Client Deals desc ──────────
+    # Each property has one ZIP, so the Total row reconciles to the column totals.
     if zip_rows:
         rows.append(blank())
         rows.append(section_header(ZIP_SECTION_TITLE))
@@ -1209,12 +1231,18 @@ def write_excel(path, rows, sheet_title):
         'A': (
             "Category\n"
             "Row labels for each section. Section headers: Likely Deal Score, Total Score, "
-            "Action Plan, Mkt Count, Distress. Sub-rows are the range buckets or distress "
-            "types within each section, plus a Total row at the bottom of each section."
+            "Action Plan, Mkt Count, Distress, Month, ZIP Code. Sub-rows are the range buckets, "
+            "distress types, months or zips within each section.\n"
+            "Total rows: Likely Deal Score, Total Score, Action Plan, Mkt Count and ZIP Code. "
+            "Distress and Month have no Total — a property can carry several distress types, "
+            "and Column C counts a property in every month it was sent, so a sum would count "
+            "properties more than once."
         ),
         'B': (
             "Total Properties\n"
             "All properties in the domain with BUYBOX SCORE > 0 — the full addressable universe.\n"
+            + (f"Excluded counties (no longer in the buybox): {', '.join(sorted(c.title() for c in EXCLUDED_COUNTIES))} — not counted in any column.\n"
+               if EXCLUDED_COUNTIES else "") +
             "Likely Deal Score / Total Score: all scored properties.\n"
             "Action Plan: only properties that have an action plan assigned.\n"
             "Mkt Count: only properties with at least 1 marketing contact (DM, SMS or Cold Calling); strongest channel.\n"
@@ -1225,6 +1253,8 @@ def write_excel(path, rows, sheet_title):
             "Properties in the Fulfillment\n"
             "Unique properties (by FOLIO) recommended across all fulfillment files in the "
             "analysis window.\n"
+            + (f"Properties in {', '.join(sorted(c.title() for c in EXCLUDED_COUNTIES))} are excluded.\n"
+               if EXCLUDED_COUNTIES else "") +
             "Scores: MAX across all months per property.\n"
             "Action Plan: best (lowest day count) across all months.\n"
             "Mkt Count: max(total DM, total SMS, total Cold Calling contacts) — strongest channel only; "
@@ -1251,7 +1281,8 @@ def write_excel(path, rows, sheet_title):
             "for a profit in a short period of time. These represent investor market transactions that "
             "overlapped with properties the client was recommended.\n"
             "Source: properties that appear in both the Market Deals file and the fulfillment-sold subset.\n"
-            "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX).\n"
+            "Join: Market Deals PropertyID matched to domain PROPERTY ID (BUYBOX); when the file has "
+            "no PropertyID, matched on normalized ADDRESS + ZIP.\n"
             "Scores: pre-sale fulfillment MAX values (same as Column D).\n"
             "Distress: fulfillment binary distress columns per FOLIO (same source as C/D); "
             "ABSENTEE (Absentee / Out of State / Owner Occupied) = fulfillment ABSENTEE, max across months."
@@ -1271,7 +1302,7 @@ def write_excel(path, rows, sheet_title):
             "Client Deals\n"
             "Deals from the Deals & Leads file that matched a fulfillment property via FOLIO.\n"
             "Only deals with Deal validation = Approved are counted.\n"
-            f"Date: Last Sale Date (else Deal Date) within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}, "
+            f"Date: later of Last Sale Date / Deal Date within {WINDOW_START.strftime('%b %d %Y')} – {PERIOD_END.strftime('%b %d %Y')}, "
             f"{ATTRIB_MIN_MONTHS} to {ATTRIB_MAX_MONTHS} months after a send of the property. Undated deals are excluded.\n"
             "Only fulfillment-matched deals are counted. Unmatched deals are excluded.\n"
             "Scores: fulfillment MAX values."

@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime
+import os
 import socket
 import subprocess
 import sys
@@ -1185,6 +1186,9 @@ def export_pdf(html_path: Path, pdf_path: Path) -> None:
             context = p.chromium.launch_persistent_context(
                 user_data_dir=tmp_user_data,
                 args=["--disable-dev-shm-usage"],
+                # Optional: use an installed browser (e.g. "msedge") when the
+                # bundled Chromium can't be installed.
+                channel=os.environ.get("PLAYWRIGHT_CHANNEL") or None,
             )
             page = context.new_page()
             page.goto(url)

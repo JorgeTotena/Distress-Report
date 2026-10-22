@@ -1,5 +1,5 @@
 # Atlas Report — Session Handoff
-**Last updated:** 2026-06-17 — Leverage Companies; **Columns D/E now resolve sold + market-deal status on the fulfillment-RECOMMENDED address** (domain FOLIOs can map to >1 property — Fix 11); deduped per-FOLIO **`Fulfillment_Audit.xlsx`** added + compilation auto-falls-back to CSV when it exceeds Excel's row limit (Fix 12); companion HTML/PDF **memory fix** — trims to sold rows before copy (Fix 13). Earlier this session: Columns F/G count unique property (FOLIO) + exact-row dedup of the leads file; COUNTY restored to domain; LEAD DATE / APPOINTMENT DATE added to compilation; ZIP section removed; parquet caching for fulfillments + domain column filtering; CSV domain source support
+**Last updated:** 2026-10-22 — Jerry Buys Houses; deals dated by the **later of LAST SALE DATE / DEAL DATE** (Fix 17); **`EXCLUDED_COUNTIES`** drops counties that left the buybox (Livingston for Jerry) from fulfillments + domain (Fix 18); **no Total row under Distress and Month** (Fix 19); missing May/Aug 2025 + Mar 2026 fulfillments added
 
 ## Context
 Building an Atlas Report system for 8020REI, a B2B SaaS real estate data platform.
@@ -25,7 +25,7 @@ Working directory: `E:\Claude projects\Test project\Distress Report`
 3. **Disposition timelines** — deals take time to close; the window captures active-lead outcomes.
 4. **No surprises** — earlier versions enforced a 6-month "intended window" that silently dropped files outside it. The folder is now the single source of truth.
 
-**Current window:** 2025-01 – 2026-03 (11 months, 31 files in folder)
+**Current window:** 2025-01 – 2026-09 (21 months, 21 files in folder — Jerry Buys Houses)
 
 ---
 
@@ -172,25 +172,25 @@ All data columns populated:
 
 ---
 
-## Key Numbers (Latest Run — September 2026, Prime Housing Solutions)
+## Key Numbers (Latest Run — October 2026, Jerry Buys Houses)
 
 | Metric | Value |
 |---|---|
-| Domain properties (BUYBOX > 0) | 682,415 |
-| Fulfillment unique FOLIOs | 675,793 |
-| Fulfillment rows (per FOLIO-month) | 3,169,092 |
-| Sold since Jun 1 2025 (in fulfillment) | 18,054 |
-| Market Deals (overlap with fulfillment-sold) | 1,156 |
-| Client Leads (Column F, fulfillment-matched) | 1,502 |
-| Client Deals (Column G, fulfillment-matched) | 102 |
-| Owner Occupied — Column C | 565,437 |
-| Owner Occupied — Column F (Leads) | 1,259 |
-| Owner Occupied — Column G (Deals) | 79 |
-| FOLIOs with Default Risk | 973,072 |
-| Counties with matched sales | 4 |
-| ZIP block | 197 zips (65 with >= 1 client deal) |
-| Month block | 15 months (2025-06 .. 2026-08) + 237 undated leads |
-
+| Domain properties (BUYBOX > 0) | 334,320 |
+| Fulfillment unique FOLIOs (after Livingston exclusion) | 150,101 |
+| Fulfillment rows (per FOLIO-month, before exclusion) | 512,000 |
+| Livingston rows / FOLIOs excluded | 8,671 / 4,091 |
+| Sold since Jan 1 2025 (in fulfillment, 1–24 months after a send) | 5,969 |
+| Market Deals (overlap with fulfillment-sold) | 489 |
+| Client Leads (Column F, fulfillment-matched) | 481 |
+| Client Deals (Column G, fulfillment-matched, Approved) | 34 |
+| Owner Occupied — Column C | 119,376 |
+| Owner Occupied — Column F (Leads) | 317 |
+| Owner Occupied — Column G (Deals) | 23 |
+| FOLIOs with Default Risk | 572,099 |
+| Counties with matched sales | 3 (Wayne, Oakland, Macomb) |
+| ZIP block | 149 zips (23 with >= 1 client deal) |
+| Month block | 22 months (2025-01 .. 2026-10) + 199 undated leads |
 
 ---
 
@@ -314,6 +314,26 @@ totals by construction). B is blank; the domain universe has no month dimension.
 The companion HTML/PDF already had its own `Monthly Sale Volume` table and is **not** affected by
 this change — it receives `df`/`dom`, never `dl` or `month_table`.
 
+### Fix 17 — Deals dated by the later of LAST SALE DATE / DEAL DATE
+`LAST SALE DATE` on a deal row can be the **prior owner's** sale (Jerry: five Approved deals closed in
+2026 by `DEAL DATE` carried 1997–2010 sale dates), which pushed real deals out of the window. Deals are
+now dated by the later of the two (blank sale date still falls back to `DEAL DATE`). Applies to all
+clients going forward (decided 2026-10-22). Jerry: Column G 28 → 33 on the same fulfillment set; all
+still pass the 1–24 month send-to-sale rule.
+
+### Fix 18 — `EXCLUDED_COUNTIES`: drop counties that left the client's buybox
+New setting at the top of `build_domain_report.py`. Rows whose `COUNTY` matches (case-insensitive) are
+dropped from the fulfillments right after load and from the domain after coercion, so they count in no
+column (B–G) and in no companion page. Jerry: `{'LIVINGSTON'}` — 8,671 fulfillment rows / 4,091 FOLIOs
+and 26 domain rows dropped. Clear it (`set()`) when switching clients.
+
+### Fix 19 — No Total row under Distress and Month
+Summing the Distress rows counts a property once per distress type, and Month's Column C counts a
+property once per month sent — both totals overstated the number of properties. Their Total rows were
+removed. Likely Deal Score / Total Score / Action Plan / Mkt Count / **ZIP Code** keep theirs (each
+property falls in exactly one bucket / zip; the ZIP total equals the column totals). Column A's header
+note explains this.
+
 ## Open / Decided Issues
 
 | Issue | Status | Decision |
@@ -337,6 +357,9 @@ this change — it receives `df`/`dom`, never `dl` or `month_table`.
 | Market deal / sale credited to wrong property (FOLIO maps to >1 address) | ✅ Fixed | Resolve D/E on the fulfillment-recommended address; dedup prefers the matching domain row (Fix 11) |
 | Manual audits undercount (compilation > Excel limit → CSV + stale .xlsx) | ✅ Fixed | Auto-CSV fallback, delete stale .xlsx, always emit deduped `Fulfillment_Audit.xlsx` (Fix 12) |
 | Companion HTML/PDF OOM at current data scale | ✅ Fixed | Trim fulfillment to sold rows + needed cols before copy (Fix 13) |
+| Deal LAST SALE DATE is a prior owner's sale | ✅ Decided 2026-10-22 | Use the later of LAST SALE DATE / DEAL DATE (Fix 17) |
+| County no longer in the client's buybox | ✅ Decided 2026-10-22 | Exclude via `EXCLUDED_COUNTIES` (Fix 18) |
+| Distress / Month Total rows overstate properties | ✅ Decided 2026-10-22 | Removed; ZIP Total kept (Fix 19) |
 
 ---
 
@@ -366,17 +389,14 @@ this change — it receives `df`/`dom`, never `dl` or `month_table`.
 
 | Field | Value |
 |---|---|
-| Client name | Prime Housing Solutions |
-| Client ID | 2047 |
-| CSM | Victoria Solis |
-| Start date with 8020REI | **2025-05-31** (from the 8020REI client record; onboarded 2025-06-12) |
-| Active counties | ST LUCIE, MIAMI-DADE, BROWARD, PALM BEACH (FL) — the St Lucie + SoFlo split in the file names |
-| Direct Mail monthly goal | 270,000 (matches the Month block's C of ~270k/month) |
-| Deals/Leads file | `Documents/Leads & Deals Prime Housing Solutions.xlsx` (no `PROPERTY STATUS` — see Fix 14) |
-| Market Deals file | `Market Deals/Market Deals Prime Housing Solutions.xlsx` (no PropertyID → address+ZIP fallback) |
-| Domain source | 6 CSV parts in `Domain Full Data/` (COO config_2.5M_449_part_1–6.csv), 2,532,207 rows |
-| Fulfillment window | Jun 2025 – Jun 2026 (13 months, 40 xlsx files) |
-| Markets | SoFlo + St Lucie. Cold Calling ends after Mar 2026 (client plan change, not missing files) |
+| Client name | Jerry Buys Houses |
+| Client ID | 1807 |
+| Start date with 8020REI | **2025-01-16** (`Client Since` from the 8020REI client record) |
+| Active counties | WAYNE, OAKLAND, MACOMB (MI). **Livingston left the buybox** — excluded via `EXCLUDED_COUNTIES` |
+| Channels | Direct Mail only (24K/month through Jan 2026, 25K/month from Feb 2026) |
+| Deals/Leads file | `Documents/` (auto-discovered; `Deal validation` column required) |
+| Market Deals file | `Market Deals/Jerrybuyhouses Market Deals.xlsx` (no PropertyID → address+ZIP fallback) |
+| Fulfillment window | Jan 2025 – Sep 2026 (21 months, 21 xlsx files — May/Aug 2025 and Mar 2026 added 2026-10-22) |
 | Excel sections | Full report (all sections, incl. Month + ZIP) |
 
 
@@ -393,7 +413,8 @@ this change — it receives `df`/`dom`, never `dl` or `month_table`.
 > fulfillment file names and the companion's county count) and monthly channel goals (cross-checks
 > Column C volume and explains channel gaps in the window).
 
-Three variables at the top of `build_domain_report.py` must be updated when switching clients:
+Four variables at the top of `build_domain_report.py` must be updated when switching clients:
 - `CLIENT_NAME` — used in the output filename (`{CLIENT_NAME} - Distress Report - YYYY-MM.xlsx`)
 - `CLIENT_START_DATE` — date the client started with 8020REI
 - `MARKET_PATH` — path to the client's market deals file
+- `EXCLUDED_COUNTIES` — counties no longer in the client's buybox (`set()` for none)

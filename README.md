@@ -59,7 +59,15 @@ CLIENT_START_DATE = pd.to_datetime("2025-05-31")   # "Client Since" — look thi
 MARKET_PATH       = BASE / "Market Deals" / "Market Deals Prime Housing Solutions.xlsx"
 ```
 
-These are the only values that change between clients.
+These change between clients, along with one optional setting:
+
+```python
+EXCLUDED_COUNTIES = {'LIVINGSTON'}   # counties no longer in the client's buybox; set() for none
+```
+
+Rows whose `COUNTY` matches (case-insensitive) are dropped from the fulfillments **and** the domain
+on load, so they count in no column (B–G). Use it when a county left the client's buybox but still
+appears in older fulfillment files. Clear it (`set()`) when switching clients.
 
 ### Where `CLIENT_START_DATE` comes from — look it up, never infer it
 
@@ -177,8 +185,9 @@ distribution, e.g.:
 `Approved` are counted in G. Any other value, including blank, drops the deal. If the column is
 missing, the script stops with an error instead of counting unvalidated deals.
 
-**Deal windowing.** Deals are windowed on `LAST SALE DATE` — when the property actually sold.
-Where a deal row has **no** sale date, the script falls back to `DEAL DATE`. Deals with neither are
+**Deal windowing.** Deals are windowed on the **later of `LAST SALE DATE` and `DEAL DATE`**.
+`LAST SALE DATE` can be a prior owner's sale (years before the client's deal), so a later
+`DEAL DATE` wins; a blank sale date also falls back to `DEAL DATE`. Deals with neither are
 excluded. The date must fall inside the period (window start .. run date) **and** pass the
 send-to-sale attribution rule below.
 
@@ -205,6 +214,12 @@ Each column includes sub-rows for distress breakdowns (Pre-foreclosure, Vacant, 
 
 `Likely Deal Score` → `Total Score` → `Action Plan` → `Mkt Count` → `Distress` → **`Month`** → `ZIP Code`
 
+**Total rows.** Likely Deal Score, Total Score, Action Plan, Mkt Count and ZIP Code end with a
+Total row — each property falls in exactly one bucket / zip, so the ZIP total equals the column
+totals. **Distress and Month have no Total row:** a property can carry several distress types, and
+Month's Column C counts a property in every month it was sent, so a sum would overstate the number
+of properties.
+
 ### Month section — by event month
 
 One row per calendar month, counting what **happened** that month:
@@ -216,13 +231,13 @@ One row per calendar month, counting what **happened** that month:
 | D | the month the property sold (`LAST SALE DATE`) |
 | E | the month the market-deal property sold (`LAST SALE DATE`) |
 | F | the month that qualified the lead (the same date the window filter used) |
-| G | the month that qualified the deal (`LAST SALE DATE`, else `DEAL DATE`) |
+| G | the month that qualified the deal (later of `LAST SALE DATE` / `DEAL DATE`) |
 
-**D, E, F and G reconcile exactly to their column totals** — F/G bucket on the same date that
-qualified the row for the window, so they tie by construction. **Column C does not reconcile:**
-a FOLIO recommended in five months is counted in all five, so the C column sums higher than the
-Column C total. Leads kept with a blank date (per the blank-date rule) land in a trailing
-`(no date)` row so the F total still ties.
+The block has **no Total row**. D, E, F and G still reconcile exactly to their column totals
+(the script prints the check) — F/G bucket on the same date that qualified the row for the window,
+so they tie by construction. **Column C does not reconcile:** a FOLIO recommended in five months is
+counted in all five, which is why no Total is shown. Leads kept with a blank date (per the
+blank-date rule) land in a trailing `(no date)` row so the F sum still ties.
 
 The block spans the union of every month seen, so it runs **past the end of the fulfillment
 window** — sales keep landing after the last fulfillment file. A month with two fulfillment
@@ -289,6 +304,7 @@ Claude Code will read the scripts, update the necessary variables, run the steps
    - `CLIENT_NAME`
    - `CLIENT_START_DATE` ← the `Client Since` value from step 5, **not** inferred from the data
    - `MARKET_PATH`
+   - `EXCLUDED_COUNTIES` ← counties that left the buybox, or `set()` (clear the previous client's)
 7. Run `python compile_domain.py` (domain files changed)
 8. Run `python build_domain_report.py`
 
